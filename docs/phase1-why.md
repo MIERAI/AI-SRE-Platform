@@ -151,6 +151,96 @@ qwen3 在 4 次固定种子重复下 4/4 正确。
 
 ---
 
+## 20 条告警实测：三轮迭代 ✅
+
+`agent/parser/extract.py`，qwen3:14b，temperature=0，每版只改一件事以便归因。
+
+| 版本 | 唯一改动 | 格式 | 内容 | 全对 | 修好 | 新问题 |
+|---|---|---|---|---|---|---|
+| v1 | 基线 | 20/20 | 46/50 · 92% | 16/20 | — | — |
+| v2a | + severity 标签优先规则 | 20/20 | 48/50 · 96% | **18**/20 | a01 a18 | — |
+| v2b | + 枚举从实测分布反推扩充 | 20/20 | 50/51 · 98% | **19**/20 | a17 a19 | — |
+| v2c | + 拆分 symptom / cause | 20/20 | 50/51 · 98% | 19/20 | **a02** | a17 答案键失效 |
+
+（v2b 起分母变 51，因 a19 在新枚举下有了可判定的期望值。百分比不可跨版严格对比，全对数可以。）
+
+### 第一轮的 4 个失败项，0 个是模型的能力问题
+
+| 用例 | 表面现象 | 真实原因 |
+|---|---|---|
+| a01 a18 | severity 该 critical 却给 warning | **我的 Prompt 缺规则**。输入 labels 里明写 `"severity":"critical"`，而 System Prompt 只说了「resolved 不是 critical」，把模型带成了全局保守 |
+| a02 | error_type 该 OOMKilled 却给 CrashLoopBackOff | **schema 结构缺陷**。模型的 root_cause 里明明写了 OOMKilled —— 它知道。输入里 `State: CrashLoopBackOff`（现象）与 `Last State: OOMKilled`（原因）同时存在，**一个字段装不下两层** |
+| a17 | error_type 该 NetworkUnavailable 却给 Unknown | **我的答案键错了**。`NetworkUnavailable` 是 Node condition，而事件是 `FailedCreatePodSandBox`。模型拒绝硬套并给出 confidence 0.6，比答案键准确 |
+
+### 枚举必须从数据分布反推，不能拍脑袋列
+
+v1 的 11 个类型是凭 SRE 常识拍的。实测 20 条里 **40% 落到 Unknown**，拆开看：
+
+```
+a13 a14              真的信息不足 / 日志截断     2 个 ← 设计意图内
+a06 a16 a17 a19 a20  枚举压根没这个类目          5 个 ← 设计缺陷
+a12                  resolved，不该由 error_type 表达  1 个
+```
+
+v2 枚举按这 5 条失败用例补齐：`ContainerStartError` `VolumeFillingUp` `ResourceOvercommit`
+`FailedScheduling` `PodSandboxError` `UpstreamDependencyFailure`，并删掉误设计的 `NetworkUnavailable`。
+
+### symptom / cause 拆分的效果（a02）
+
+```
+symptom = CrashLoopBackOff      <- 原文 State: Waiting 写的（现象）
+cause   = OOMKilled             <- 原文 Last State: Terminated 写的（原因）
+```
+
+代价：**改了字段语义，答案键必须同步重写**。a17 在拆分后变成
+`symptom=PodSandboxError, cause=UpstreamDependencyFailure`，按旧语义写的答案键失效了。
+这是评测集的真实维护成本。
+
+---
+
+## 约束解码的价值 = 基线不合规率 ✅（含一次被自己推翻的解读）
+
+同 prompt 同测试集，唯一变量是 `format` 参数：
+
+| | A 组 prompt-only | B 组 constrained |
+|---|---|---|
+| T=0.0 | 格式 100% · 内容 98% · 全对 19 | 格式 100% · 内容 98% · 全对 19 |
+| T=1.0 | 格式 100% · 内容 98% · 全对 19 | 格式 100% · 内容 96% · 全对 18 |
+| T=1.6 | 格式 100% · 内容 94% · 全对 17 | 格式 100% · 内容 98% · 全对 19 |
+
+**看起来** A 组随温度退化、B 组持平。**先量噪声再解读** —— 同一配置（v2b/A/T=1.6）重复三次：
+
+```
+第 1 次   格式 20/20 100%   内容 48/51 94%   全对 17
+第 2 次   格式 20/20 100%   内容 50/51 98%   全对 19
+第 3 次   格式 19/20  95%   内容 50/51 98%   全对 18
+```
+
+**噪声 = ±2 项，正好等于 A/B 的差异大小。上面那个「A 退化 B 持平」的解读被推翻。**
+
+### 但第 3 次那个 19/20 是真信号
+
+失败项：`severity='error'` —— 一个听起来合理但不在 `{critical,warning,info}` 里的值。
+这正是约束解码物理上能杜绝的。
+
+### 最终结论
+
+1. **约束解码的收益 ≈ 基线不合规率。** T=0 时基线 100% 合规，收益为 0；
+   T=1.6 时基线约 98.3%，收益约 1.7%（60 次调用里 1 次枚举越界）。
+   「上生产就该开 structured output」这个默认建议对本例不成立。
+2. **内容质量的 A/B 差异全部在噪声内**，n=20 单次运行分辨不出来。
+3. **噪声本身 = ±2/20 项** —— 这个数直接决定评测集该多大、每格该跑几次。
+
+### 方法论：两种证据的强度不是一个量级
+
+- v2a/v2b/v2c 的提升可信，因为**每步都预先预测了具体哪一条会被修好，然后精确命中**（机制归因）
+- 温度对比不可信，因为只看了总分，而总分波动 = 噪声
+
+**我差点从 1~2 项差异里编出一个漂亮结论。这个坑今天在同一个会话里踩了三次**
+（对照实验改两个变量 ×2、把噪声当信号 ×1）。
+
+---
+
 ## 尚未回答
 
 - temperature / top-p 具体如何影响 JSON 稳定性（接 Phase 0 自己写的 `_sample()` 解释）
