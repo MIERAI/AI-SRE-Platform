@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# 数据与产物：不进 git
+labs/**/data/
+labs/**/out/
+*.safetensors
+*.npz
+*.bin
+*.gguf
+
+.DS_Store
+.env
