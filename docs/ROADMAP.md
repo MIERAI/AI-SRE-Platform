@@ -15,7 +15,7 @@
 | **当前阶段** | Phase 1 · Prompt Engineering + Function Calling |
 | **状态** | 🏗️ 进行中 |
 | **上次更新** | 2026-07-28 |
-| **下一步动作** | 拉 qwen3:14b → 读它的 chat_template 看 tools 怎么进 prompt → 手写 Function Calling 循环 |
+| **下一步动作** | 写抽取 Prompt 跑 20 条测试告警出通过率 → 手写 Function Calling 完整循环（含工具执行与结果回灌） |
 
 **Phase 0 已暂停** ⏸️（2026-07-28）：跳 1 完成，追问 ①④⑥⑧ 结案，核心目标（看得见模型内部）已达成。
 未做完的留在下面，随时可回来补：追问 ②③⑤⑦、对读 nanoGPT、跳 2（BPE + TinyStories）。
@@ -165,15 +165,31 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
 
 ### ① 跑通
 
-- [ ] 本地模型环境：Ollama 拉 `qwen3:14b`（Q4 ~9GB）+ `nomic-embed-text`
-- [ ] 写一个 Prompt，把 K8s 告警日志转成固定 schema 的 JSON，**用 20 条不同告警测试稳定性**（不是手册说的 5 条）
-- [ ] 手写 Function Calling 循环：工具定义 → 模型返回 tool_call → 你的代码执行 → 结果回灌 → 最终回答
-- [ ] 同一个工具，在 Anthropic API 和本地 Ollama 上各实现一遍，对比差异
+> **环境约束**：无 API key，全程本地 Ollama。原计划的「Anthropic API vs Ollama 对比」改为
+> 「qwen3:14b vs deepseek-r1:14b 对比」—— 结果反而更有料，见 ② 的实测发现。
+
+- [x] 本地模型：`qwen3:14b`（9.3GB）已就绪；`deepseek-r1:14b` 已有
+- [x] 20 条测试告警就绪 → `agent/parser/testdata/alerts.jsonl`，含 8 条难例
+      （resolved 误判 / 信息不足 / 截断 / 提示词注入 / JSON 转义 / 根因在上游 / 日语 / 多故障）
+- [x] 目标 schema → `agent/parser/schema.py`（一物三用：prompt / 约束解码 / 校验）
+- [ ] 写抽取 Prompt，跑 20 条测稳定性，出通过率数字
+- [ ] 手写 Function Calling 循环：工具定义 → tool_call → 执行 → 结果回灌 → 最终回答
+- [ ] `nomic-embed-text`（Phase 3 才需要）
 
 ### ② 拆源码 · 设计追问
 
-- [ ] **Function Calling 在 API 层到底传了什么？** 抓一次真实请求体看 `tools` 字段；模型侧它是被拼进 system prompt 还是走特殊 token？（Qwen 的 chat template 里直接能看到答案，去读 tokenizer_config.json 的 `chat_template`）
-- [ ] **Structured Output 的两条技术路线**：prompt 约束 vs **约束解码**。读 llama.cpp 的 GBNF grammar 或 Outlines 库——它怎么在采样时 mask 掉非法 token？为什么这条路线能 100% 保证 JSON 合法而 prompt 不能
+- [x] **Function Calling 在 API 层传了什么** —— 已结案。读 qwen3 的 chat template + 手写同样的
+      system prompt 绕过 `tools` 参数，拿到完全相同的语义输出。**它就是 prompt 工程 + 输出端字符串解析**。
+      三个推论：工具定义占 system prompt token；`tool_calls` 是解析产物会失败；**`tool` 角色被渲染成
+      `user` 消息 → 提示词注入攻击面**
+- [x] **"支持工具"是模型能力还是模板能力** —— 已结案。deepseek-r1 模板 0 处提及 tool，被 API 层拒绝；
+      手写 prompt 绕过后语义正确但格式错误（用了 ` ```json ` 而非 `<tool_call>`）。**= 模板槽位 + 训练语法**
+- [x] **Structured Output 两条路线** —— 已结案。在 Phase 0 的莎士比亚模型上自己实现了约束解码
+      （`labs/00-nano-gpt/constrained.py`）：18 步里 17 步只有 1 个合法 token，模型自发产出该串的
+      概率 7.4e-19。**保证来自采样器不来自模型**。副产品：「模型给合法集的概率质量」可作生产监控指标
+- [ ] ⚠️ **未解决**：约束解码下 deepseek-r1 的字符串字段被系统性污染（5 个不同错误值），
+      qwen3 完全正常。两个机制假设（off-distribution thinking / token healing）**都被实验否证**。
+      要往下查需要 token 级 logprobs → llama.cpp `--logits-all`
 - [ ] 接 Phase 0：temperature / top-p 具体怎么影响 JSON 稳定性？从你自己写的采样代码解释
 - [ ] 为什么模型会输出 ` ```json ` 包裹？和训练数据分布的关系
 - [ ] CoT 为什么有效——是真推理还是给了更多计算步？（读一下相关质疑论文，别只信厂商说法）
@@ -489,5 +505,30 @@ Prometheus 告警
 **还没搞懂的**
 追问 ②（QKV 为何合并）③（多头相比单头，从矩阵秩的角度）⑤（FFN 为何 4 倍）
 ⑦（RoPE 为何能外推）。还没对读 nanoGPT 源码。
+
+### 2026-07-28 · Phase 1 开工（同日）
+
+**做了什么**
+读 chat template 看清 Function Calling 的真面目 → 手写 prompt 绕过 `tools` 参数做对照 →
+在 Phase 0 的莎士比亚模型上自己实现约束解码 → 建 20 条告警测试集与目标 schema。
+详见 `docs/phase1-why.md`。
+
+**最大的收获**
+**Function Calling 没有协议层魔法。** `tools` 数组被 chat template 序列化成纯文本塞进 System
+Prompt，模型生成 `<tool_call>{...}</tool_call>` 文本，Ollama 在输出端做字符串解析。手写同样的
+system prompt 能拿到完全相同的语义输出。由此推出三条会改变写 Agent 方式的结论，其中最重要的：
+**`tool` 角色被渲染成 `user` 消息 —— 工具返回的不可信内容和用户指令处在同一信任级别。**
+
+**踩的坑 / 意外**
+1. **KV cache 跨窗口越界**（Phase 0 遗留 bug）。绝对位置编码烙进了缓存，没法滑窗丢最老的几个，
+   只能整个缓存作废重算 —— 这是 RoPE 的动机之一。已修。
+2. **约束解码下 deepseek-r1 的字符串字段被系统性污染**，5 个不同错误值，qwen3 完全正常。
+   **我提的两个机制假设都被自己的实验否证了**（开 thinking 无效；换 enum 无效）。机制挂账，
+   但「约束解码保证形式不保证内容」这条被三种方式独立证实。
+3. 再次确认：`json.loads()` 成功 + schema 校验通过 = **什么都没保证**。这是 Phase 4 的存在理由。
+
+**还没搞懂的**
+约束解码污染的机制（需 token 级 logprobs，llama.cpp `--logits-all`）；
+temperature/top-p 对 JSON 稳定性的具体影响；模型为何爱输出 ` ```json ` 包裹；CoT 是否真推理。
 
 <!-- 下一条从这里开始 -->
