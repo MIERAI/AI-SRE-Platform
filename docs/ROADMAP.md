@@ -13,9 +13,9 @@
 | 项 | 值 |
 |---|---|
 | **当前阶段** | Phase 0 · 从零训一个小 GPT |
-| **状态** | 🏗️ 进行中（跳 1：shakespeare + char-level） |
+| **状态** | 🏗️ 进行中 —— 跳 1 基本完成，追问 ①④⑥⑧ 已结案 |
 | **上次更新** | 2026-07-28 |
-| **下一步动作** | 回答追问 ④（KV cache 三连问）→ 实现 KV cache → warmup 对照实验 → 跳 2 换 BPE |
+| **下一步动作** | 追问 ②③⑤⑦（QKV 合并 / 多头的秩 / FFN 4x / RoPE）→ 对读 nanoGPT → 跳 2 换 BPE + TinyStories |
 
 进度总览：
 
@@ -114,10 +114,14 @@ AI-SRE-Platform/
 - [x] 实证因果掩码：改动 t=4 之后的 token，位置 0–3 输出差异精确为 0 ✅
 - [x] 训练：AdamW + warmup + cosine，loss/lr 落 CSV → `train.py`
 - [x] 采样：greedy / temperature / top-k
-- [ ] 正式跑 3000 steps（10.7M 参数，n_layer=6 n_head=6 n_embd=384 block=256）
-- [ ] 加 KV cache，测出生成加速倍数
-- [ ] top-p 采样
-- [ ] 对照实验：`--no-warmup`，贴两条 loss 曲线
+- [x] 正式跑 3000 steps（10.7M 参数）→ **val 最低 1.4635 @ step 1750，之后过拟合到 1.6012**
+      生成样例有正确的剧本格式和角色名。教训：1.1M 字符喂 10.7M 参数 = 数据不够，模型在背书
+- [x] 加 checkpoint：只存 val 最优权重（base 那次跑最优权重没留住，是真实的工程漏洞）
+- [x] KV cache 实现 + 正确性验证（greedy 下有无 cache 输出完全一致；去掉位置偏移则静默退化）
+- [x] top-p 核采样
+- [x] KV cache 加速比实测 → `bench_kvcache.py`：**只有 3.3x（理论 128x）**，由此挖出解码是
+      memory-bandwidth-bound，并从第一性原理预测出 deepseek-r1:14b 的 22 tok/s（误差 10%）
+- [x] 对照实验 2×2×2：LN 位置 × warmup × lr → `ablation_ln.py`（含恒定 lr 的干净对照）
 
 **跳 2 · TinyStories + BPE**
 
@@ -130,10 +134,10 @@ AI-SRE-Platform/
 
 - [x] **① Tokenizer 三角权衡** —— 已结案，同语料实测：char(65 词表/1.12M tokens)、word(13k/263k，45.3% 词只出现一次)、BPE(11.7k/338k)。关键结论：BPE 与 char 共有**闭包性**（字节回退，永不 OOV），word-level 独缺；小模型必须用小词表的真正原因是**参数预算**（BPE 嵌入层 450 万参数 > 整个模型）；char-level 的真实代价是**有效上下文缩水 3.3 倍**，不是速度
 - [ ] **Attention**：为什么是 Q/K/V 三个投影而不是两个？多头相比单头到底多了什么（不是"关注不同方面"这种空话，从矩阵秩的角度说）
-- [ ] **Causal mask**：它怎么保证训练时能并行算全部位置的 loss？**这一条是 KV cache 能成立的直接原因**——想清楚这个，Phase 6 的 PagedAttention 一看就懂
-- [ ] **Pre-LN vs Post-LN**：原始 Transformer 是 Post-LN，为什么现在全是 Pre-LN？和梯度、warmup 必要性的关系
+- [x] **④ Causal mask → KV cache** —— 已结案。训练能并行需要两个条件（无位置依赖 + teacher forcing，后者带来 exposure bias）；缓存 K/V 的判据是**复用性**不是不可变性（过去的 Q 同样不变，但再也用不上）；实证掩码差异精确为 0；有无 cache 输出等价测试通过
+- [x] **⑥ Pre-LN vs Post-LN** —— 已结案。Pre-LN 的 `I + J_f` 是梯度直通车；Post-LN 每层乘一次 LN 雅可比，随深度指数变化。**Pre-LN 的价值是拉宽可用 lr 范围**，不是效果更好（Post-LN+warmup 在 lr=1e-3 下反而最优 1.975）。代价：残差流方差累加，深层被稀释
 - [ ] **位置编码**：绝对位置编码 → RoPE，RoPE 解决了什么绝对编码解决不了的问题？为什么它能外推
-- [ ] **LR schedule**：为什么需要 warmup？去掉 warmup 会看到什么现象（做一次对照实验，贴 loss 曲线）
+- [x] **⑧ LR schedule / warmup** —— 已结案，2×2×2 对照 + 恒定 lr 干净复核。**warmup 防的是早期不可逆损伤，不是加速收敛**：无 warmup 组头 50 步全部趴在塌缩值 3.3 附近，Pre-LN 能爬出来，Post-LN 爬不出来。lr=6e-3 时 Post-LN 两组皆死
 - [ ] 对照阅读 karpathy/nanoGPT 的 `model.py`，找出你的实现和它的每一处差异，解释谁对
 
 ### ③ 落仓
@@ -457,5 +461,30 @@ Prometheus 告警
 - 读完 v2 手册，确定四条修改：加 Phase 0、Phase 6 改架构演练、删提示词模板、LoRA 加厚
 - 确认硬件约束：只有 M4 Pro 24GB，无外部 GPU
 - 起点定为 Phase 0
+
+### 2026-07-28 · Phase 0 跳 1 完成（同日）
+
+**做了什么**
+手写 GPT（零现成 Transformer 组件）→ char-level tokenizer → 训练循环 → KV cache →
+2×2×2 LN/warmup 对照 → KV cache 基准 → 用第一性原理预测 14B 模型解码速度并验证。
+10.7M 参数模型训练 3000 步 / 24 分钟，val 最低 1.4635。详见 `docs/phase0-why.md`。
+
+**最大的收获**
+从一个 10.7M 的玩具模型出发，预测出 14B 生产模型在本机的解码速度 22 tok/s，误差 10%。
+路径：KV cache 只快 3.3x（理论 128x）→ 追查发现每步耗时几乎恒定 → 算带宽利用率
+16%→68% 单调逼近 273 GB/s → 得出「解码是 memory-bandwidth-bound」→ 273÷9GB×效率 → 验证。
+**Phase 0 不是"先玩玩小的"，是获得对大模型做定量预测的能力。**
+
+**踩的坑（都是自己的代码）**
+1. **对照实验改了两个变量，两次。** `--no-warmup` 连带改了整条 cosine 曲线；KV cache 规模
+   实验同时改 `n_layer` 和 `n_embd`，得到非单调假象。两次都是重做才干净。
+2. **训练没存 checkpoint。** val 在 step 1750 触底，跑到 2999 过拟合（val +9%，train −26%），
+   最优权重没留住。已修：只存 val 最优。
+3. **1.1M 字符喂 10.7M 参数 = 数据不够**，模型在背书。这是跳 2 的硬理由。
+4. `tee` 的块缓冲吞掉后台训练日志，看不到进度。要 `PYTHONUNBUFFERED=1`。
+
+**还没搞懂的**
+追问 ②（QKV 为何合并）③（多头相比单头，从矩阵秩的角度）⑤（FFN 为何 4 倍）
+⑦（RoPE 为何能外推）。还没对读 nanoGPT 源码。
 
 <!-- 下一条从这里开始 -->

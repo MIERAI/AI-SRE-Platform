@@ -68,6 +68,7 @@ def main():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--warmup", type=int, default=100)
     p.add_argument("--no-warmup", action="store_true", help="对照实验：去掉 warmup")
+    p.add_argument("--post-ln", action="store_true", help="对照实验：用原论文的 Post-LN")
     p.add_argument("--eval-interval", type=int, default=100)
     p.add_argument("--tag", type=str, default="base", help="本次实验名，用于区分日志")
     args = p.parse_args()
@@ -81,10 +82,13 @@ def main():
     cfg = GPTConfig(
         vocab_size=meta["vocab_size"], block_size=args.block_size,
         n_layer=args.n_layer, n_head=args.n_head, n_embd=args.n_embd,
+        post_ln=args.post_ln,
     )
     model = GPT(cfg)
     mx.eval(model.parameters())
-    print(f"[{args.tag}] 参数量 {model.n_params():,} | warmup={'off' if args.no_warmup else args.warmup}")
+    print(f"[{args.tag}] 参数量 {model.n_params():,} | "
+          f"{'Post-LN' if args.post_ln else 'Pre-LN'} | "
+          f"warmup={'off' if args.no_warmup else args.warmup} | lr={args.lr:g}")
 
     optimizer = optim.AdamW(learning_rate=args.lr, weight_decay=0.1)
     loss_and_grad = nn.value_and_grad(model, lambda m, x, y: m.loss(x, y))
@@ -92,6 +96,11 @@ def main():
     log_path = OUT / f"log_{args.tag}.csv"
     log = csv.writer(log_path.open("w", newline=""))
     log.writerow(["step", "lr", "train_loss", "val_loss", "elapsed_s"])
+
+    # 只存 val 最优的权重。base 那次跑就是栽在这里：val 在 step 1750 触底，
+    # 之后一路过拟合到 2999，最优权重却没留下来，只剩下最终那个更差的状态。
+    best_val, best_step = float("inf"), -1
+    ckpt = OUT / f"ckpt_{args.tag}.safetensors"
 
     t0 = time.time()
     for step in range(args.steps):
@@ -107,12 +116,18 @@ def main():
         if step % args.eval_interval == 0 or step == args.steps - 1:
             e = estimate_loss(model, splits, args.batch_size, args.block_size)
             el = time.time() - t0
+            star = ""
+            if e["val"] < best_val:
+                best_val, best_step = e["val"], step
+                model.save_weights(str(ckpt))
+                star = " *"
             print(f"step {step:>5} | lr {optimizer.learning_rate.item():.2e} | "
-                  f"train {e['train']:.4f} | val {e['val']:.4f} | {el:.0f}s")
+                  f"train {e['train']:.4f} | val {e['val']:.4f} | {el:.0f}s{star}")
             log.writerow([step, float(optimizer.learning_rate.item()), e["train"], e["val"], round(el, 1)])
-            log_path.open  # flush 由 csv 持有的文件对象在结束时处理
 
-    # 采样看看学到了什么
+    # 用 val 最优的权重采样，而不是最后一步那个可能已经过拟合的
+    print(f"\n最优 val {best_val:.4f} @ step {best_step}（末步 val {e['val']:.4f}）")
+    model.load_weights(str(ckpt))
     model.eval()
     prompt = mx.array([[meta["stoi"]["\n"]]])
     gen = model.generate(prompt, 400, temperature=0.8, top_k=40)

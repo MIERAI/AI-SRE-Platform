@@ -17,6 +17,7 @@ class GPTConfig:
     n_head: int = 4
     n_embd: int = 128
     dropout: float = 0.1
+    post_ln: bool = False   # True = 原论文 Post-LN，用于 [追问 ⑥] 对照实验
 
 
 class KVCache:
@@ -123,10 +124,18 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(cfg)
         self.ln_2 = nn.LayerNorm(cfg.n_embd)
         self.mlp = MLP(cfg)
+        self.post_ln = cfg.post_ln
 
     def __call__(self, x, mask, cache=None):
-        x = x + self.attn(self.ln_1(x), mask, cache)
-        x = x + self.mlp(self.ln_2(x))
+        if self.post_ln:
+            # 原论文（2017）：LN(x + f(x))。梯度回传必须穿过 LN 的雅可比，
+            # L 层连乘后尺度随深度指数变化 —— 这就是它离不开 warmup 的原因。
+            x = self.ln_1(x + self.attn(x, mask, cache))
+            x = self.ln_2(x + self.mlp(x))
+        else:
+            # Pre-LN：x + f(LN(x))。残差是一条恒等直通车，梯度原样流回。
+            x = x + self.attn(self.ln_1(x), mask, cache)
+            x = x + self.mlp(self.ln_2(x))
         return x
 
 
