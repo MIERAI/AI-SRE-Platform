@@ -12,17 +12,20 @@
 
 | 项 | 值 |
 |---|---|
-| **当前阶段** | Phase 0 · 从零训一个小 GPT |
-| **状态** | 🏗️ 进行中 —— 跳 1 基本完成，追问 ①④⑥⑧ 已结案 |
+| **当前阶段** | Phase 1 · Prompt Engineering + Function Calling |
+| **状态** | 🏗️ 进行中 |
 | **上次更新** | 2026-07-28 |
-| **下一步动作** | 追问 ②③⑤⑦（QKV 合并 / 多头的秩 / FFN 4x / RoPE）→ 对读 nanoGPT → 跳 2 换 BPE + TinyStories |
+| **下一步动作** | 拉 qwen3:14b → 读它的 chat_template 看 tools 怎么进 prompt → 手写 Function Calling 循环 |
+
+**Phase 0 已暂停** ⏸️（2026-07-28）：跳 1 完成，追问 ①④⑥⑧ 结案，核心目标（看得见模型内部）已达成。
+未做完的留在下面，随时可回来补：追问 ②③⑤⑦、对读 nanoGPT、跳 2（BPE + TinyStories）。
 
 进度总览：
 
 | 阶段 | 内容 | 周期 | 状态 |
 |---|---|---|---|
-| **Phase 0** | 从零训小 GPT（MLX，10–50M 参数） | 2–3 天 | 🏗️ 进行中 |
-| **Phase 1** | Prompt · Function Calling · Structured Output | 2 周 | ⬜ |
+| **Phase 0** | 从零训小 GPT（MLX，10–50M 参数） | 2–3 天 | ⏸️ 暂停（跳 1 完成，追问 ②③⑤⑦ 与跳 2 待补） |
+| **Phase 1** | Prompt · Function Calling · Structured Output | 2 周 | 🏗️ 进行中 |
 | **Phase 2** | Agent：LangGraph · Agents SDK · MCP | 4 周 | ⬜ |
 | **Phase 3** | 企业级 RAG（Runbook / Postmortem） | 3 周 | ⬜ |
 | **Phase 4** | Evaluation：Ragas · DeepEval | 2 周 | ⬜ |

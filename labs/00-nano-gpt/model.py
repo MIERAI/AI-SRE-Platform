@@ -223,9 +223,17 @@ class GPT(nn.Module):
             return idx
 
         caches = self.new_caches()
-        logits = self(idx, caches)[:, -1, :]          # prefill：一次吃下整个 prompt
+        logits = self(idx[:, -self.cfg.block_size :], caches)[:, -1, :]   # prefill
         for _ in range(max_new_tokens):
             nxt = self._sample(logits, temperature, top_k, top_p)
             idx = mx.concatenate([idx, nxt], axis=1)
-            logits = self(nxt, caches)[:, -1, :]      # decode：每步只喂 1 个 token
+
+            if caches[0].offset + 1 > self.cfg.block_size:
+                # 窗口满了。缓存里的 K/V 已经烙进了绝对位置信息，没法简单丢掉最老的
+                # 那几个做滑窗 —— 剩下的位置编号全会错位。只能整个缓存作废重算，
+                # 在窗口边界上退化回 O(N²)。RoPE 之类的相对位置编码没有这个问题。[追问 ⑦]
+                caches = self.new_caches()
+                logits = self(idx[:, -self.cfg.block_size :], caches)[:, -1, :]
+            else:
+                logits = self(nxt, caches)[:, -1, :]  # decode：每步只喂 1 个 token
         return idx
