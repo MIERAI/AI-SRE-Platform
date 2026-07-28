@@ -19,6 +19,31 @@ class GPTConfig:
     dropout: float = 0.1
 
 
+class KVCache:
+    """单层的 K/V 缓存。
+
+    这里用 concatenate 每步重新分配一块更大的显存 —— 简单但低效，
+    而且长度不可预知时会造成严重碎片。真实推理引擎（vLLM）的做法是
+    预分配 + 分页管理，那就是 PagedAttention。[追问 ④ → Phase 6]
+    """
+
+    def __init__(self):
+        self.k = None
+        self.v = None
+
+    @property
+    def offset(self) -> int:
+        return 0 if self.k is None else self.k.shape[2]
+
+    def update(self, k, v):
+        if self.k is None:
+            self.k, self.v = k, v
+        else:
+            self.k = mx.concatenate([self.k, k], axis=2)
+            self.v = mx.concatenate([self.v, v], axis=2)
+        return self.k, self.v
+
+
 class CausalSelfAttention(nn.Module):
     """多头因果自注意力。手写而不是调 mx.fast.scaled_dot_product_attention，
     因为 mask 那一步是 Phase 0 的核心，必须自己写一遍。"""
@@ -37,7 +62,7 @@ class CausalSelfAttention(nn.Module):
         self.attn_dropout = nn.Dropout(cfg.dropout)
         self.resid_dropout = nn.Dropout(cfg.dropout)
 
-    def __call__(self, x, mask):
+    def __call__(self, x, mask, cache: "KVCache | None" = None):
         B, T, C = x.shape
 
         qkv = self.c_attn(x)                       # (B, T, 3C)
@@ -50,13 +75,19 @@ class CausalSelfAttention(nn.Module):
 
         q, k, v = heads(q), heads(k), heads(v)
 
-        # 注意力打分：(B, nh, T, hd) @ (B, nh, hd, T) -> (B, nh, T, T)
+        # 只有 K/V 进缓存，Q 不进 —— 判据是"以后还用不用"，不是"变不变"。
+        # 解码时 T=1：q 只有一行，k/v 是全部历史。[追问 ④-c]
+        if cache is not None:
+            k, v = cache.update(k, v)
+
+        # 注意力打分：(B, nh, T, hd) @ (B, nh, hd, T_total) -> (B, nh, T, T_total)
         # 这就是那个 O(n²) 项，T 翻倍它翻四倍。
         att = (q @ k.transpose(0, 1, 3, 2)) * self.scale
 
         # 因果掩码：位置 i 只能看到 j <= i。把未来位置设成 -inf，
         # softmax 后它们的权重恰好为 0。[追问 ④ —— KV cache 的全部根据在这一行]
-        att = att + mask[:T, :T]
+        # mask 由调用方按 (新 token 的绝对位置, 全部历史长度) 切好传进来。
+        att = att + mask
 
         att = mx.softmax(att, axis=-1)
         att = self.attn_dropout(att)
@@ -93,8 +124,8 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(cfg.n_embd)
         self.mlp = MLP(cfg)
 
-    def __call__(self, x, mask):
-        x = x + self.attn(self.ln_1(x), mask)
+    def __call__(self, x, mask, cache=None):
+        x = x + self.attn(self.ln_1(x), mask, cache)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -114,14 +145,26 @@ class GPT(nn.Module):
         m = mx.triu(mx.full((cfg.block_size, cfg.block_size), -mx.inf), k=1)
         self._mask = m
 
-    def __call__(self, idx):
-        B, T = idx.shape
-        assert T <= self.cfg.block_size, f"序列长度 {T} 超出上下文窗口 {self.cfg.block_size}"
+    def new_caches(self) -> list[KVCache]:
+        return [KVCache() for _ in self.blocks]
 
-        pos = mx.arange(T)
+    def __call__(self, idx, caches: list[KVCache] | None = None):
+        B, T = idx.shape
+        past = caches[0].offset if caches else 0
+        assert past + T <= self.cfg.block_size, \
+            f"总长度 {past + T} 超出上下文窗口 {self.cfg.block_size}"
+
+        # 位置嵌入要用绝对位置：解码第 9 个 token 时它的位置是 8，不是 0。
+        # 这一行忘了偏移是 KV cache 最经典的 bug —— 模型不报错，只是胡说八道。
+        pos = mx.arange(past, past + T)
+
+        # 掩码切片：新 token 的绝对位置 [past, past+T) 对全部历史 [0, past+T)。
+        # 解码时 T=1，切出来是一行全 0（能看到所有历史，包括自己）。
+        mask = self._mask[past : past + T, : past + T]
+
         x = self.drop(self.wte(idx) + self.wpe(pos))   # 广播相加：(B,T,C) + (T,C)
-        for block in self.blocks:
-            x = block(x, self._mask)
+        for i, block in enumerate(self.blocks):
+            x = block(x, mask, caches[i] if caches else None)
         return self.lm_head(self.ln_f(x))              # (B, T, vocab_size)
 
     def loss(self, idx, targets):
@@ -134,19 +177,46 @@ class GPT(nn.Module):
         from mlx.utils import tree_flatten
         return sum(p.size for _, p in tree_flatten(self.parameters()))
 
-    def generate(self, idx, max_new_tokens: int, temperature: float = 1.0, top_k: int | None = None):
-        """自回归采样。注意这里每一步都把整个序列重算了一遍 —— 极度浪费。
-        跑通之后加 KV cache，就是要消掉这个浪费。[追问 ④]"""
+    @staticmethod
+    def _sample(logits, temperature: float, top_k: int | None, top_p: float | None):
+        if temperature == 0:
+            return mx.argmax(logits, axis=-1, keepdims=True)
+        logits = logits / temperature
+        if top_k is not None:
+            # 第 k 大的值作为阈值，比它小的全部压成 -inf
+            kth = mx.sort(logits, axis=-1)[:, -top_k : -top_k + 1]
+            logits = mx.where(logits < kth, -mx.inf, logits)
+        if top_p is not None:
+            # 核采样：按概率降序累加，保留累计概率刚超过 p 的最小集合。
+            # 和 top-k 的区别是候选集大小随分布的尖锐程度自适应。
+            order = mx.argsort(-logits, axis=-1)
+            sorted_logits = mx.take_along_axis(logits, order, axis=-1)
+            cum = mx.cumsum(mx.softmax(sorted_logits, axis=-1), axis=-1)
+            # 右移一位：累计概率首次超过 p 的那个 token 本身要保留
+            keep = mx.concatenate([mx.zeros_like(cum[:, :1]), cum[:, :-1]], axis=-1) < top_p
+            sorted_logits = mx.where(keep, sorted_logits, -mx.inf)
+            inv = mx.argsort(order, axis=-1)                        # 还原原始顺序
+            logits = mx.take_along_axis(sorted_logits, inv, axis=-1)
+        return mx.random.categorical(logits, axis=-1)[:, None]
+
+    def generate(self, idx, max_new_tokens: int, temperature: float = 1.0,
+                 top_k: int | None = None, top_p: float | None = None,
+                 use_cache: bool = True):
+        """自回归采样。
+
+        use_cache=False 时每一步把整个序列重算一遍 —— O(N²)，留着做对照。
+        use_cache=True  时 prefill 一次，之后每步只算 1 个新位置 —— O(N)。[追问 ④-b]
+        """
+        if not use_cache:
+            for _ in range(max_new_tokens):
+                logits = self(idx[:, -self.cfg.block_size :])[:, -1, :]
+                idx = mx.concatenate([idx, self._sample(logits, temperature, top_k, top_p)], axis=1)
+            return idx
+
+        caches = self.new_caches()
+        logits = self(idx, caches)[:, -1, :]          # prefill：一次吃下整个 prompt
         for _ in range(max_new_tokens):
-            idx_cond = idx[:, -self.cfg.block_size:]      # 超窗就截断
-            logits = self(idx_cond)[:, -1, :]             # 只要最后一个位置的预测
-            if temperature == 0:
-                nxt = mx.argmax(logits, axis=-1, keepdims=True)
-            else:
-                logits = logits / temperature
-                if top_k is not None:
-                    kth = mx.sort(logits, axis=-1)[:, -top_k:-top_k + 1]
-                    logits = mx.where(logits < kth, -mx.inf, logits)
-                nxt = mx.random.categorical(logits, axis=-1)[:, None]
+            nxt = self._sample(logits, temperature, top_k, top_p)
             idx = mx.concatenate([idx, nxt], axis=1)
+            logits = self(nxt, caches)[:, -1, :]      # decode：每步只喂 1 个 token
         return idx
