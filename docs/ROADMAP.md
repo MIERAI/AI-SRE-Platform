@@ -15,7 +15,7 @@
 | **当前阶段** | Phase 2 · Agent 开发（LangGraph / MCP） |
 | **状态** | 🏗️ 进行中 |
 | **上次更新** | 2026-07-30 |
-| **下一步动作** | Checkpointer 剩余三用途实测（崩溃恢复 / time-travel / 多轮）→ MCP 专题 → Agents SDK 对照 |
+| **下一步动作** | MCP 专题（写 K8s MCP Server 并接进 Claude Code）→ OpenAI Agents SDK 对照实现 |
 
 **Phase 1 ① 跑通已完成**，② 拆源码 5/8 结案。剩余三个小追问随时可补：
 temperature/top-p 对 JSON 的影响 · 模型为何爱输出 ```json 包裹 · CoT 是否真推理。
@@ -240,7 +240,11 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
 - [x] Human-in-the-Loop 硬门控：破坏性工具必经 `interrupt()`。
       **同一攻击：手写循环执行 5/5 → 门控拦下 5/5，未批准变更 0 处**
 - [x] Checkpointer（SqliteSaver）已接上并驱动 interrupt/resume
-- [ ] 杀掉进程后从断点恢复（崩溃恢复还没实测）
+- [x] Checkpointer 四个用途全部实测 → `agent/timetravel.py`
+      崩溃恢复：待执行写入**恰好执行一次** ✅，但 checkpointer **不保证整体无重复副作用**
+      （模型自己重复请求时会忠实执行）→ **幂等性是工具的责任**，对破坏性工具尤其要命
+      多轮会话：历史完全由 checkpointer 承载，第二轮只发一句话
+      time-travel：见下方悬案结案
 - [x] 并行分支 → `agent/graph_parallel.py`（Send 动态 fan-out 做全集群巡检）
       **实测 Ollama 单实例串行**（并发 3 次比串行慢 0.89x，延迟等差叠加=排队）
       → 设计原则：单实例后端下并行分支用来并行化**取数据**，不是并行化调模型
@@ -265,7 +269,12 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
 - [x] **interrupt 的实现机制** —— 假设已验证。**不是「暂停在这一行继续」，是节点级重放**：
       恢复时整个节点体从头重跑，已答复的 interrupt 返回缓存值。最小例子里 2 个 interrupt
       导致节点体执行 **3 次**。推论：**interrupt 之前不能有副作用，审批与执行必须拆成两个节点**
-- [ ] **Checkpointer 为什么是必需品**：四个用途里 HITL 已实测，崩溃恢复 / time-travel / 多轮会话待做
+- [x] **Checkpointer 为什么是必需品** —— 四个用途全部实测。最大收获是用 **time-travel 结掉了
+      Phase 1 的悬案**：从同一 checkpoint 重放 6 次，模型决策 **6/6 恒定**（相同输入下确定）；
+      真正的变量是**模型的加载状态** —— 冷启动 3/3 选 `get_pods`、热缓存 3/3 选 `get_events`
+      （交替顺序，已排除时间漂移）。**两个稳定状态，两个不同的确定性输出。**
+      ⚑ 这条回头修正了 Phase 1 的「±2/20 不可解释噪声」——候选机制已找到，
+      且给 Phase 4 定下一条硬规矩：**可复现的评测必须固定 keep_alive 并预热**
 - [ ] **MCP 协议层**：它是 JSON-RPC 2.0 over stdio/SSE。抓一次完整会话——`initialize` 握手协商了什么？`tools/list` 返回的 schema 和 Phase 1 的 tools 字段是什么关系？为什么说"写一次工具所有模型复用"，这个复用发生在哪一层？
 - [ ] MCP 相比普通 Function Calling，多出来的成本是什么？（进程管理、序列化开销、调试难度）——什么场景下不该用 MCP
 
@@ -684,5 +693,35 @@ Pregel/superstep 的内部机制（还没读源码）；崩溃恢复与 time-tra
 - **模型编造了服务依赖关系**（"billing 可能依赖 payment"），巡检数据里没有任何依赖信息。
   修法是数据里必须带 service graph，未修。
 - 发现自己的隐患：`graph_agent.py` 的 `decisions: dict` 没 reducer，只因目前无并发写才没炸。
+
+### 2026-07-30 · Checkpointer 四用途 + 结掉 Phase 1 悬案（同日）
+
+**做了什么**
+`agent/timetravel.py` 实测 checkpointer 的四个用途，并用 time-travel 回头解决
+Phase 1 遗留的「temperature=0 下 Agent 行为不可复现」。
+
+**最大的收获：悬案结案，且回头修正了 Phase 1 的结论**
+
+两步实验：
+1. **从完全相同的 checkpoint 重放 6 次**（只跑一个 agent 节点）→ 决策 **6/6 恒定**。
+   所以不是单点随机。
+2. **那什么在变？模型的加载状态。** 同一份输入，交替冷/热跑 6 次：
+   冷启动 3/3 选 `kubectl_get_pods`，热缓存 3/3 选 `kubectl_get_events`。
+   **两个稳定状态，两个不同的确定性输出**，且冷启动那个决策明显更差（冗余调用）。
+
+⚑ **这条回头修正了 Phase 1**：那里测出的「±2/20 不可解释噪声」，现在有了候选机制。
+那批实验没控制 `keep_alive`、没预热。已在 `docs/phase1-why.md` 加修正说明。
+**给 Phase 4 定下硬规矩：可复现的评测必须固定 keep_alive 并预热。**
+
+**第二个收获：checkpointer 的保证边界**
+崩溃恢复实测显示「待执行的写入恰好执行一次」✅，但整体看 `get_pods` 出现了两次 ——
+**那不是 checkpoint 重放，是模型在下一轮自己又请求了一次相同调用**，checkpointer 忠实执行。
+
+> Checkpointer 保证「待执行写入恰好一次」，**不保证「整体无重复副作用」。
+> 幂等性是工具的责任。** `kubectl_delete_pod` 被模型重复请求两次，就会真删两次。
+
+**踩的坑**
+我自己脚本里的「是否重复执行」判定写错了，第一版打印了错误的 ✅。
+加上「崩溃时待执行的工具」这个仪表后才看清真相。**判定逻辑本身也要被审查。**
 
 <!-- 下一条从这里开始 -->

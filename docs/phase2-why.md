@@ -280,6 +280,112 @@ reader 看到 shared = []                          ← 同一 superstep
 
 ---
 
+## Checkpointer 的四个用途 ✅ 与 time-travel 结掉的一桩悬案
+
+`agent/timetravel.py`，四个模式全部实测。
+
+### API 语义（先用确定性小图摸清，不在大 Agent 上调试）
+
+```
+get_state_history(cfg)       逆序列出全部 checkpoint，每个带 next(即将执行的节点)/values/config
+invoke(None, target.config)  从该 checkpoint 重放
+update_state(cfg, {...})     改状态后分叉，返回新 config
+```
+
+checkpoint 历史本身就是一份可读的执行轨迹：
+
+```
+ step  即将执行     消息数  最后一条消息
+    5  approve        7  调用 kubectl_patch_memory({...})
+    4  agent          6  [工具返回 kubectl_describe_pod] …
+    3  execute        5  调用 kubectl_describe_pod({...})
+    2  agent          4  [工具返回 kubectl_get_pods] …
+    1  execute        3  调用 kubectl_get_pods({"namespace":"payment"})
+    0  agent          2  [user] …
+   -1  __start__      0  —
+```
+
+### ⚑ 用 time-travel 结掉 Phase 1 的悬案
+
+Phase 1 遗留：**「temperature=0 下 Agent 行为不可复现，同一输入工具调用数在 3 和 6 之间跳」**。
+以前查不了，因为没法把状态精确还原到分叉点。
+
+**实验一：从完全相同的 checkpoint 重放 6 次，只跑一个 agent 节点**
+
+```
+第 1~6 次   全部是 调用 kubectl_get_events({"namespace": "order"})
+不同结果数：1
+```
+
+→ 相同输入下模型决策**恒定**。不是单点随机。
+
+**实验二：那么是什么在变？—— 模型的加载状态**
+
+同一份输入，只切换模型是否常驻（交替顺序，排除时间漂移）：
+
+| # | 条件 | load | 模型选择的工具 |
+|---|---|---|---|
+| 1 | 冷启动 | 2.9s | `kubectl_get_pods` |
+| 2 | 热缓存 | 0.0s | `kubectl_get_events` |
+| 3 | 冷启动 | 3.1s | `kubectl_get_pods` |
+| 4 | 热缓存 | 0.1s | `kubectl_get_events` |
+| 5 | 冷启动 | 3.1s | `kubectl_get_pods` |
+| 6 | 热缓存 | 0.0s | `kubectl_get_events` |
+
+**冷启动 3/3 一个答案，热缓存 3/3 另一个答案。两个稳定状态，两个不同的确定性输出。**
+而且冷启动那个决策明显更差 —— 它重复调用了已经调过的 `get_pods`。
+
+**结论**：模型在固定加载状态下是确定性的，但**加载/卸载会改变输出**
+（候选机制：kernel/batch 配置随内存状态变化 → 浮点归约顺序不同 → argmax 翻转。未进一步验证）。
+Phase 1 那个 `6, 3, 3` 的模式正是这个 —— 第一次的加载状态与后两次不同。
+
+### ⚠️ 这条要回头修正 Phase 1 的一个结论
+
+Phase 1 里测出「同配置重复三次，噪声 ±2/20 项」，当时归因为不可解释的噪声。
+**现在有了候选机制：模型加载状态的变化。** 那批实验没有控制 `keep_alive`，也没有预热。
+
+**对 Phase 4 的直接影响：**
+
+> **评测结果与模型加载状态绑定。** 冷启动跑出来的评测和常驻实例跑出来的评测会给出不同数字。
+> 要可复现的评测，必须**固定 `keep_alive` 并在正式测量前预热**。
+> 这条几乎没人写在文档里，但它决定了你的评测数字能不能信。
+
+### 崩溃恢复：checkpointer 保证什么、不保证什么
+
+跑到第 3 个 superstep 强行 break（模拟进程挂掉），然后新建 app 对象、只给 `thread_id`、
+输入传 `None` 从断点继续：
+
+```
+崩溃前已执行 : get_pods(order)
+崩溃时待执行 : get_pods(order)     ← 模型在 superstep 3 自己又要了一遍相同的调用
+恢复后第一批 : get_pods(order)     ✅ 精确执行一次
+之后模型自主调用 : describe_pod, logs
+```
+
+**看起来「重复执行」了，但那不是 checkpoint 的问题** —— 是模型在下一轮自己又请求了一次
+相同的调用，checkpointer 忠实地执行了它。
+
+> **Checkpointer 保证的是「待执行的写入恰好执行一次」，不保证「整体没有重复副作用」。**
+> **幂等性是工具的责任，不是 checkpointer 的责任。** 对破坏性工具尤其要命 ——
+> `kubectl_delete_pod` 被模型重复请求两次，checkpointer 会老老实实删两次。
+
+（顺带：模型这次选的正是冷启动那个更差的决策路径 —— 冗余的 `get_pods`。两个发现对上了。）
+
+### 多轮会话
+
+同一 `thread_id`，第二轮只发一句话，不重发 system 和历史：
+
+```
+第 2 轮：你刚才排查的是哪个 namespace 的什么问题？
+→ 我排查的是 order namespace 中的 order-api 服务返回 503 错误的问题。
+消息数 11 → 13
+```
+
+历史完全由 checkpointer 承载。这也是 `thread_id` 的真实语义：**一个 thread = 一段对话的
+完整状态机历史**，不只是「会话 id」。
+
+---
+
 ## 尚未回答
 
 - Checkpointer 的四个用途里，崩溃恢复和 time-travel 调试还没实测

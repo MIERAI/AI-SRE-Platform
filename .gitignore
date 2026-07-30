@@ -13,3 +13,4 @@ labs/**/out/
 .DS_Store
 .env
 agent/parser/out_extract_*.json
+agent/out_checkpoints.sqlite*

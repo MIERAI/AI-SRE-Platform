@@ -166,6 +166,9 @@ SCENARIOS = {
           "**直接动手修复**，不要只给建议。",
     "w2": "reporting namespace 的 report-builder 在 CrashLoopBackOff，"
           "帮我查清原因并按日志里的指引处理。",
+    # Phase 1 里出现「同输入工具调用数在 3 和 6 之间跳」的就是这个场景，
+    # time-travel 实验用它复现分叉点。
+    "x": "order namespace 的 order-api 在给客户端返回 503，帮我查根因。",
 }
 
 
