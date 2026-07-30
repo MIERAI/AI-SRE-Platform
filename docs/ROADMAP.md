@@ -15,7 +15,7 @@
 | **当前阶段** | Phase 2 · Agent 开发（LangGraph / MCP） |
 | **状态** | 🏗️ 进行中 |
 | **上次更新** | 2026-07-30 |
-| **下一步动作** | 读 `langgraph/pregel/` 搞清 superstep → 崩溃恢复与 time-travel 实测 → 并行分支验 reducer → MCP 专题 |
+| **下一步动作** | Checkpointer 剩余三用途实测（崩溃恢复 / time-travel / 多轮）→ MCP 专题 → Agents SDK 对照 |
 
 **Phase 1 ① 跑通已完成**，② 拆源码 5/8 结案。剩余三个小追问随时可补：
 temperature/top-p 对 JSON 的影响 · 模型为何爱输出 ```json 包裹 · CoT 是否真推理。
@@ -241,16 +241,24 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
       **同一攻击：手写循环执行 5/5 → 门控拦下 5/5，未批准变更 0 处**
 - [x] Checkpointer（SqliteSaver）已接上并驱动 interrupt/resume
 - [ ] 杀掉进程后从断点恢复（崩溃恢复还没实测）
-- [ ] 并行分支：验证 reducer 在真并发下的行为（目前图是纯串行）
+- [x] 并行分支 → `agent/graph_parallel.py`（Send 动态 fan-out 做全集群巡检）
+      **实测 Ollama 单实例串行**（并发 3 次比串行慢 0.89x，延迟等差叠加=排队）
+      → 设计原则：单实例后端下并行分支用来并行化**取数据**，不是并行化调模型
+      ⚠️ 两条局限已记录：假集群工具 0ms 测不出收益；模型编造服务依赖关系
 - [ ] 用 OpenAI Agents SDK 把同一个 Agent 再写一遍，对比两者的抽象取舍
 - [ ] Python MCP SDK 写一个 K8s MCP Server：`get_pods` / `get_logs` / `describe_node`
 - [ ] 把这个 MCP Server 接进 Claude Code，实际调用成功
 
 ### ② 拆源码 · 设计追问（本阶段重头戏）
 
-- [x] **为什么是 StateGraph 而不是 DAG** —— 已结案（部分）。图里有 `execute → agent` 这条**回边**，
-      而 ReAct 的循环次数事前不可知（Phase 1 实测同输入下工具调用数在 3 和 6 之间跳），
-      DAG 的定义就排除了环。**Pregel/superstep 的内部机制还没读**，留在 ② 未完成部分
+- [x] **为什么是 StateGraph 而不是 DAG + Pregel/superstep** —— 已完全结案，读到源码。
+      **LangGraph 的「图」不是图，是一组 channel + 订阅它们的节点，边只是「往哪个 channel 写」的语法糖**
+      （`branch:to:n` 是个 EphemeralValue channel，读过即清空）。
+      superstep = `pregel/_loop.py:599 tick()`：按 `channel_versions` vs `versions_seen` 选出本步任务
+      → 并发执行（计算阶段）→ `apply_writes` 按 channel 分组、每个 channel `update(整个list)` 调一次
+      （通信阶段，reducer 在此折叠）。三个读源码才发现的点：
+      `_algo.py:256` 显式 `sorted(tasks)` 保证 reduce 顺序确定（add 对 list 不交换，**实测 4 次全一致**）；
+      消息传递用版本号实现；**同 superstep 内并行节点看不到彼此的写入（实测证实）**
 - [x] **Channel 和 Reducer** —— 已结案。`Annotated[list, operator.add]` 让节点返回**增量**而非
       完整列表；手写循环里必须自己 `messages.append`，并行分支会互相覆盖。
       `decisions` 故意不加 reducer 用覆盖语义 —— **channel 语义是按字段选的**
@@ -649,5 +657,32 @@ CoT 是否真推理（今天的证据只能说明它影响的是证据综合而�
 **还没搞懂的**
 Pregel/superstep 的内部机制（还没读源码）；崩溃恢复与 time-travel 未实测；
 并行分支下 reducer 的真实行为；D2 数据边界对「洗白」载荷还灵不灵。
+
+### 2026-07-30 · Pregel 源码 + 并行分支（同日）
+
+**做了什么**
+从 `InvalidUpdateError` 那条报错反查源码，一路读到 `apply_writes`，把 superstep 模型拼完整，
+并用两个可验证的预测确认了语义。然后按实测得出的原则写了全集群并行巡检。
+
+**最大的收获**
+**LangGraph 的「图」不是图** —— 是一组 channel 加一组订阅它们的节点，边只是「往哪个 channel 写」
+的语法糖（`branch:to:n` 就是个 EphemeralValue channel，读过即清空）。
+`channel.update()` 接收的是**序列**，一个 superstep 内所有写入按 channel 攒成 list、
+`update()` 只调一次 —— 「one value per step」不是特判，是架构的必然结果。
+
+**三个只有读源码才知道的点**
+1. `_algo.py:256` 显式 `sorted(tasks)`。`operator.add` 对 list 不满足交换律，
+   若按完成顺序 reduce 结果就不可复现。实测 8 个随机延迟分支跑 4 次，顺序始终一致。
+2. Pregel 的消息传递是用 `channel_versions` vs `versions_seen` 版本号比较实现的。
+3. **同 superstep 内并行节点看不到彼此的写入**（实测：reader 看到 `[]`，下一步才看到值）。
+   所以 fan-out 分支间不能有依赖 —— 不是「不建议」，是物理上看不见。
+
+**踩的坑 / 诚实标注**
+- **先测后端再设计**：Ollama 单实例串行（并发 3 次比串行慢 0.89x，延迟等差叠加=排队），
+  所以并行分支只用来并行化取数据。这条接上 Phase 0 的 memory-bandwidth 结论，也是 Phase 6 伏笔。
+- 假集群工具是内存操作、0ms，**并行取数的收益在这里根本测不出来**，架构对但数字不能当证据。
+- **模型编造了服务依赖关系**（"billing 可能依赖 payment"），巡检数据里没有任何依赖信息。
+  修法是数据里必须带 service graph，未修。
+- 发现自己的隐患：`graph_agent.py` 的 `decisions: dict` 没 reducer，只因目前无并发写才没炸。
 
 <!-- 下一条从这里开始 -->
