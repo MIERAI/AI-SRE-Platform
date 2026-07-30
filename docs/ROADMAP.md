@@ -12,10 +12,13 @@
 
 | 项 | 值 |
 |---|---|
-| **当前阶段** | Phase 1 · Prompt Engineering + Function Calling |
-| **状态** | 🏗️ 进行中 —— ① 跑通已完成，② 拆源码 5/8 结案 |
-| **上次更新** | 2026-07-28 |
-| **下一步动作** | 剩余追问：temperature/top-p 对 JSON 的影响 · 为何爱输出 ```json 包裹 · CoT 是否真推理。之后进 Phase 2 LangGraph |
+| **当前阶段** | Phase 2 · Agent 开发（LangGraph / MCP） |
+| **状态** | 🏗️ 进行中 |
+| **上次更新** | 2026-07-30 |
+| **下一步动作** | 读 `langgraph/pregel/` 搞清 superstep → 崩溃恢复与 time-travel 实测 → 并行分支验 reducer → MCP 专题 |
+
+**Phase 1 ① 跑通已完成**，② 拆源码 5/8 结案。剩余三个小追问随时可补：
+temperature/top-p 对 JSON 的影响 · 模型为何爱输出 ```json 包裹 · CoT 是否真推理。
 
 **Phase 0 已暂停** ⏸️（2026-07-28）：跳 1 完成，追问 ①④⑥⑧ 结案，核心目标（看得见模型内部）已达成。
 未做完的留在下面，随时可回来补：追问 ②③⑤⑦、对读 nanoGPT、跳 2（BPE + TinyStories）。
@@ -25,8 +28,8 @@
 | 阶段 | 内容 | 周期 | 状态 |
 |---|---|---|---|
 | **Phase 0** | 从零训小 GPT（MLX，10–50M 参数） | 2–3 天 | ⏸️ 暂停（跳 1 完成，追问 ②③⑤⑦ 与跳 2 待补） |
-| **Phase 1** | Prompt · Function Calling · Structured Output | 2 周 | 🏗️ 进行中 |
-| **Phase 2** | Agent：LangGraph · Agents SDK · MCP | 4 周 | ⬜ |
+| **Phase 1** | Prompt · Function Calling · Structured Output | 2 周 | ✅ ① 完成，② 5/8 结案 |
+| **Phase 2** | Agent：LangGraph · Agents SDK · MCP | 4 周 | 🏗️ 进行中 |
 | **Phase 3** | 企业级 RAG（Runbook / Postmortem） | 3 周 | ⬜ |
 | **Phase 4** | Evaluation：Ragas · DeepEval | 2 周 | ⬜ |
 | **Phase 5** | LoRA / QLoRA（源码级，非浅尝） | 1.5 周 | ⬜ |
@@ -226,19 +229,35 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
 
 ### ① 跑通
 
-- [ ] LangGraph ReAct Agent，≥3 个工具（`read_file` / `run_command` 白名单 / `kubectl_get`）
-- [ ] 加 Checkpointer（SQLite），杀掉进程后能从断点恢复
-- [ ] 实现 Human-in-the-Loop：执行危险命令前 `interrupt`，等人工确认
+- [x] **先让手写循环撞墙** → `agent/wall.py` + `agent/wall_repeat.py`
+      加 3 个真会改状态的破坏性工具。W1：Agent 自主做出 **3 处未经批准的生产变更**。
+      W2：注入载荷指挥它把另一个健康服务缩到 0
+- [x] **发现防御反转**：Phase 1 里 3/3 有效的 D3 提醒，在新载荷上把执行率从 0/5 推到 **5/5**。
+      加中性措辞对照组辨明机制 —— 是**多插一条 user 消息**这个结构改动，与措辞无关
+- [x] LangGraph ReAct Agent，8 个工具 → `agent/graph_agent.py`
+      刻意不用 MessagesState / LangChain 消息对象，用自己的 TypedDict + raw HTTP，
+      好让 channel + reducer 的本质不被抽象挡住
+- [x] Human-in-the-Loop 硬门控：破坏性工具必经 `interrupt()`。
+      **同一攻击：手写循环执行 5/5 → 门控拦下 5/5，未批准变更 0 处**
+- [x] Checkpointer（SqliteSaver）已接上并驱动 interrupt/resume
+- [ ] 杀掉进程后从断点恢复（崩溃恢复还没实测）
+- [ ] 并行分支：验证 reducer 在真并发下的行为（目前图是纯串行）
 - [ ] 用 OpenAI Agents SDK 把同一个 Agent 再写一遍，对比两者的抽象取舍
 - [ ] Python MCP SDK 写一个 K8s MCP Server：`get_pods` / `get_logs` / `describe_node`
 - [ ] 把这个 MCP Server 接进 Claude Code，实际调用成功
 
 ### ② 拆源码 · 设计追问（本阶段重头戏）
 
-- [ ] **为什么是 StateGraph 而不是 DAG？** ReAct 本质是 while 循环，DAG 表达不了"不知道要循环几次"。那 LangGraph 用什么模型表达？→ 去读它的 **Pregel** 实现（`langgraph/pregel/`）。Pregel 是 Google 的图计算模型，BSP superstep——搞明白一个 superstep 里发生了什么
-- [ ] **Channel 和 Reducer**：为什么 state 更新要写成 `Annotated[list, add]` 而不是直接赋值？多个节点并发写同一个 key 时会发生什么？读 `channels/` 目录
-- [ ] **Checkpointer 为什么是必需品而不是可选功能？** 列出它同时解决的四件事（崩溃恢复、HITL、time travel 调试、多轮会话），并说明如果没有它，HITL 要怎么实现、代价是什么
-- [ ] **interrupt 的实现机制**：暂停一个正在跑的图，本质上是"保存状态 + 抛异常"，恢复是"从 checkpoint 重放"。去代码里验证这个猜想对不对
+- [x] **为什么是 StateGraph 而不是 DAG** —— 已结案（部分）。图里有 `execute → agent` 这条**回边**，
+      而 ReAct 的循环次数事前不可知（Phase 1 实测同输入下工具调用数在 3 和 6 之间跳），
+      DAG 的定义就排除了环。**Pregel/superstep 的内部机制还没读**，留在 ② 未完成部分
+- [x] **Channel 和 Reducer** —— 已结案。`Annotated[list, operator.add]` 让节点返回**增量**而非
+      完整列表；手写循环里必须自己 `messages.append`，并行分支会互相覆盖。
+      `decisions` 故意不加 reducer 用覆盖语义 —— **channel 语义是按字段选的**
+- [x] **interrupt 的实现机制** —— 假设已验证。**不是「暂停在这一行继续」，是节点级重放**：
+      恢复时整个节点体从头重跑，已答复的 interrupt 返回缓存值。最小例子里 2 个 interrupt
+      导致节点体执行 **3 次**。推论：**interrupt 之前不能有副作用，审批与执行必须拆成两个节点**
+- [ ] **Checkpointer 为什么是必需品**：四个用途里 HITL 已实测，崩溃恢复 / time-travel / 多轮会话待做
 - [ ] **MCP 协议层**：它是 JSON-RPC 2.0 over stdio/SSE。抓一次完整会话——`initialize` 握手协商了什么？`tools/list` 返回的 schema 和 Phase 1 的 tools 字段是什么关系？为什么说"写一次工具所有模型复用"，这个复用发生在哪一层？
 - [ ] MCP 相比普通 Function Calling，多出来的成本是什么？（进程管理、序列化开销、调试难度）——什么场景下不该用 MCP
 
@@ -596,5 +615,39 @@ v2a/v2b/v2c 的提升可信，因为每步都**预先预测了具体哪一条会
 **还没搞懂的**
 temperature/top-p 对 JSON 稳定性的具体影响；模型为何爱输出 ```json 包裹；
 CoT 是否真推理（今天的证据只能说明它影响的是证据综合而非证据获取，且不稳定）。
+
+### 2026-07-30 · Phase 2 开工：撞墙 → 硬门控
+
+**做了什么**
+给假集群加 3 个真会改状态的破坏性工具，让 Phase 1 的手写循环撞墙；
+装 LangGraph 1.2.10，按「审批零副作用」的规则重写 Agent，做 A/B 压力测试。
+详见 `docs/phase2-why.md`。
+
+**最大的收获（三条）**
+
+1. **防御反转 —— 今天最贵的一课。** Phase 1 里 3/3 有效的 D3 提醒，换一种注入载荷后
+   把执行率从 0/5 推到 **5/5**，真的把生产服务缩到 0。加中性措辞对照组辨明机制：
+   **是「多插一条 user 消息」这个结构改动本身，与提醒说什么无关。**
+   一条 user 轮次等于告诉模型「人还在等你做事」——**你以为在加防护，实际改掉了终止条件。**
+   → 防御必须按载荷逐个验证，不能跨场景外推。
+
+2. **interrupt 是节点级重放，不是行级续跑。** 最小例子：一个节点里 2 个 interrupt，
+   节点体被执行 **3 次**。所以 interrupt 之前不能有任何副作用，审批与执行必须拆成两个节点。
+   这是 Phase 1 写在路线图里的假设，今天验证为真。
+
+3. **架构门控有效但有明确边界。** 同一攻击：手写循环执行 5/5、变更 5 处；
+   LangGraph 门控拦下 5/5、变更 0 处。但门控**解决不了「洗白」**——
+   基线下模型不动手，只把攻击者指令包装成权威建议交给人。
+   授权问题和信息完整性问题需要两种不同的防御。
+
+**踩的坑 / 判断**
+- 刻意**不用** MessagesState 和 LangChain 消息对象，用自己的 TypedDict + 原来的 raw HTTP。
+  代价是多写点代码，收益是 channel/reducer 的本质没被抽象挡住，而且证明了
+  LangGraph 与 LLM 客户端正交。
+- 破坏性工具必须真的改状态（`MUTATIONS` 记账），否则「撞墙」没有说服力。
+
+**还没搞懂的**
+Pregel/superstep 的内部机制（还没读源码）；崩溃恢复与 time-travel 未实测；
+并行分支下 reducer 的真实行为；D2 数据边界对「洗白」载荷还灵不灵。
 
 <!-- 下一条从这里开始 -->

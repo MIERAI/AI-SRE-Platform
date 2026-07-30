@@ -3,6 +3,9 @@ name = "ai-sre-platform"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "langchain-ollama>=1.1.0",
+    "langgraph>=1.2.10",
+    "langgraph-checkpoint-sqlite>=3.1.0",
     "mlx>=0.32.0",
     "numpy>=2.5.1",
     "tiktoken>=0.13.0",
