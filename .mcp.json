@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "k8s-sre": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/Users/yangzaiqi/workspace/AI-SRE-Platform",
+        "mcp/k8s_server/server.py"
+      ]
+    }
+  }
+}

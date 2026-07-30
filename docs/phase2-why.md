@@ -386,6 +386,172 @@ Phase 1 里测出「同配置重复三次，噪声 ±2/20 项」，当时归因�
 
 ---
 
+## MCP：协议层实测 ✅
+
+`mcp/k8s_server/server.py`（Server）+ `mcp/probe_protocol.py`（**手写裸 JSON-RPC 客户端**，
+刻意不用 SDK 的 ClientSession，那会把协议藏起来）+ `mcp/bridge_agent.py`（接进 Ollama Agent）。
+
+**MCP over stdio 就是【按行分隔的 JSON-RPC 2.0】，没别的。**
+
+### 完整握手序列
+
+```
+→ initialize        {protocolVersion, capabilities, clientInfo}
+← result            {protocolVersion, capabilities, serverInfo, instructions}
+→ notifications/initialized      ← 【通知】：无 id，服务端不回
+→ tools/list
+← result.tools[]    {name, description, inputSchema, outputSchema, annotations}
+→ tools/call        {name, arguments}
+← result            {content:[{type:"text",text}], structuredContent, isError}
+```
+
+### 六个实测发现
+
+**① 协议版本是降级协商，不是必须一致**
+
+```
+客户端提: 2026-07-28（SDK 的 LATEST_PROTOCOL_VERSION）
+服务端回: 2025-11-25   ← 降到自己支持的版本
+```
+
+**② capabilities 是双向声明。** 客户端声明 `{}`（什么都不要），服务端回了
+prompts/resources/tools 三块，每块带 `listChanged`（能否推送变更通知）。
+
+**③ `instructions` 会被塞进 system prompt。** 这是 MCP Server 影响模型行为的通道。
+**安全意义重大 —— 一个不可信的 Server 可以直接往你的 system prompt 里写东西**，
+比 Phase 1 那个工具返回值注入更靠上游。这也解释了为什么 Claude Code 对项目级
+`.mcp.json` 要求显式批准（实测：`⏸ Pending approval`）—— **架构层门控，不是叮嘱**。
+
+**④ 工具错误不是 JSON-RPC error，是 `result` 里的 `isError: true`**
+
+```json
+{"result": {"content": [{"text": "Unknown tool: rm_minus_rf"}], "isError": true}}
+```
+
+刻意的分层：**协议错误给客户端，工具错误给模型**。工具失败需要回灌让模型改正，
+所以它必须是一个「成功的响应」。
+
+**⑤ 参数校验在服务端**（pydantic），错误原文回给模型：
+`1 validation error ... namespace Field required`。
+
+**⑥ 成本是实打实的。** 8 个工具的 `tools/list` = **4957 字节 ≈ 1239 tokens**，
+每次对话都要进 system prompt。进程启动 3ms（解释器已预热的情况）。
+
+---
+
+### 「写一次工具所有模型复用」，复用发生在哪一层 ✅
+
+对比 MCP 的 `inputSchema` 和 Phase 1 手写的 Ollama `parameters`：**同一个 JSON Schema。**
+全部适配代码：
+
+```python
+def mcp_to_ollama(t):
+    return {"type": "function", "function": {
+        "name": t["name"],
+        "description": t["description"],
+        "parameters": t["inputSchema"],     # ← 改个键名而已
+    }}
+```
+
+**所以复用不发生在 schema 层** —— JSON Schema 在 MCP 之前就是事实标准了。
+复用发生在 **发现 + 传输 + 生命周期 + 元数据** 层：以前每个项目要自己解决
+「工具在哪、怎么启动、怎么调用、危不危险」，现在标准化了。
+
+**`annotations` 是 MCP 独有的**，OpenAI/Ollama 的格式里没有对应字段。
+
+---
+
+### annotations：把私有约定升级成协议字段
+
+四个 hint：`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`。
+前两个正是我们在撞墙实验里手工搓的 `DESTRUCTIVE` 集合；第三个正是上一节的结论
+**「幂等性是工具的责任」**。
+
+`mcp/bridge_agent.py` 把门控依据从私有集合换成了协议字段，实测生效：
+
+```
+工具                        需审批   依据
+list_namespaces             直通
+kubectl_get_pods            直通
+...
+kubectl_patch_memory        ⏸ 是    服务端声明 destructiveHint=true
+kubectl_delete_pod          ⏸ 是    服务端声明 destructiveHint=true
+kubectl_scale_deployment    ⏸ 是    服务端声明 destructiveHint=true
+
+轮 5  ⏸ 拦下 kubectl_patch_memory({...})   服务端声明 destructiveHint=true
+门控拦下 1 次破坏性操作
+```
+
+`idempotentHint` 那一栏是真在做工程判断，不是抄模板：
+
+| 工具 | idempotent | 理由 |
+|---|---|---|
+| `kubectl_patch_memory` | True | 设成同一个值，第二次无额外效果 |
+| `kubectl_scale_deployment` | True | 同理 |
+| `kubectl_delete_pod` | **False** | 第二次会删掉重建出来的**新** Pod，效果不同 |
+
+⚠️ **但 hint 是服务端自报的，不是保证。** 不可信 Server 完全可以谎报
+`destructiveHint=false`。所以 `bridge_agent.py` 额外保留了一份**客户端侧兜底名单**
+（按工具名语义匹配 delete/scale/patch/drain/evict/cordon），两者取并集。
+这不是多余 —— 是 Phase 2 反复得到的结论：**门控的权威判断必须在自己这一侧。**
+
+---
+
+### ⚠️ MCP Server 是独立进程 —— 我们的审计记账因此失效
+
+实测：通过 MCP 删掉一个 Pod，然后分别从服务端和客户端看状态。
+
+```
+通过 MCP 删除 Pod -> pod "payment-api-7d9f8c-x2k4l" deleted
+服务端进程看到的:  只剩 payment-worker           ← 删成功了
+客户端进程看到的:  两个 Pod 都还在
+MUTATIONS（客户端审计账本）: []                   ← 空的
+```
+
+**破坏性操作真的发生了，客户端的账本是空的。** 前面 Phase 2 那套 `MUTATIONS` 记账
+在 MCP 化之后直接失效 —— 它记在工具内部，而工具跑在另一个进程里。
+
+> **审计必须做在协议层（记录 `tools/call`），不能依赖工具内部的记账。**
+> 进程边界一变，审计边界必须跟着重划。
+
+（真实场景里这反而是正常的 —— kubectl 本来就操作远端集群。但这正说明审计不能靠工具自觉。）
+
+---
+
+### 什么场景【不该】用 MCP
+
+基于上面的实测成本，而不是"是不是趋势"：
+
+| 成本 | 实测值 |
+|---|---|
+| schema 常驻 system prompt | 8 个工具 ≈ 1239 tokens，每次对话都付 |
+| 独立进程 | 进程管理 + 状态不共享 + 跨进程调试 |
+| 序列化往返 | 本次会话 发 822 / 收 7975 字节 |
+| 审计边界 | 工具内部记账失效，需在协议层重做 |
+
+**不该用的场景**：单进程内自用、不需要跨客户端复用的工具。
+此时上面每一项成本都要付，而唯一的收益（跨客户端复用）为零 —— 直接函数调用更好。
+
+**该用的场景**：工具要被多个客户端（Claude Code / Claude Desktop / 自己的 Agent）共享，
+或者工具本身就该作为独立服务运行。
+
+---
+
+### 接进 Claude Code
+
+项目级 `.mcp.json`（已验证该命令能完成握手、返回 8 个工具）：
+
+```json
+{"mcpServers": {"k8s-sre": {"command": "uv",
+  "args": ["run", "--directory", "<repo>", "mcp/k8s_server/server.py"]}}}
+```
+
+`claude mcp list` 已发现它，状态 `⏸ Pending approval` —— 需要在 `claude` 里显式批准。
+**这个批准要求本身就是本阶段结论的印证**：服务端的 `instructions` 能进 system prompt，
+所以不能自动信任。
+
+---
+
 ## 尚未回答
 
 - Checkpointer 的四个用途里，崩溃恢复和 time-travel 调试还没实测

@@ -15,7 +15,7 @@
 | **当前阶段** | Phase 2 · Agent 开发（LangGraph / MCP） |
 | **状态** | 🏗️ 进行中 |
 | **上次更新** | 2026-07-30 |
-| **下一步动作** | MCP 专题（写 K8s MCP Server 并接进 Claude Code）→ OpenAI Agents SDK 对照实现 |
+| **下一步动作** | 在 `claude` 里批准 k8s-sre MCP Server → OpenAI Agents SDK 对照 → 核心项目 K8s Agent v1 收口 |
 
 **Phase 1 ① 跑通已完成**，② 拆源码 5/8 结案。剩余三个小追问随时可补：
 temperature/top-p 对 JSON 的影响 · 模型为何爱输出 ```json 包裹 · CoT 是否真推理。
@@ -250,8 +250,12 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
       → 设计原则：单实例后端下并行分支用来并行化**取数据**，不是并行化调模型
       ⚠️ 两条局限已记录：假集群工具 0ms 测不出收益；模型编造服务依赖关系
 - [ ] 用 OpenAI Agents SDK 把同一个 Agent 再写一遍，对比两者的抽象取舍
-- [ ] Python MCP SDK 写一个 K8s MCP Server：`get_pods` / `get_logs` / `describe_node`
-- [ ] 把这个 MCP Server 接进 Claude Code，实际调用成功
+- [x] Python MCP SDK 写 K8s MCP Server（8 个工具，带完整 annotations）→ `mcp/k8s_server/server.py`
+- [x] **手写裸 JSON-RPC 客户端**抓完整协议报文 → `mcp/probe_protocol.py`（刻意不用 SDK client）
+- [x] 把 MCP Server 接进自己的 Ollama Agent → `mcp/bridge_agent.py`
+      **门控依据从私有 `DESTRUCTIVE` 集合换成协议字段 `destructiveHint`**，实测拦下成功
+- [x] `.mcp.json` 已建且验证命令可握手；`claude mcp list` 已发现，状态 `⏸ Pending approval`
+- [ ] 在 Claude Code 里批准并实际调用（需用户在 `claude` 中授权，我不代做）
 
 ### ② 拆源码 · 设计追问（本阶段重头戏）
 
@@ -275,8 +279,17 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
       （交替顺序，已排除时间漂移）。**两个稳定状态，两个不同的确定性输出。**
       ⚑ 这条回头修正了 Phase 1 的「±2/20 不可解释噪声」——候选机制已找到，
       且给 Phase 4 定下一条硬规矩：**可复现的评测必须固定 keep_alive 并预热**
-- [ ] **MCP 协议层**：它是 JSON-RPC 2.0 over stdio/SSE。抓一次完整会话——`initialize` 握手协商了什么？`tools/list` 返回的 schema 和 Phase 1 的 tools 字段是什么关系？为什么说"写一次工具所有模型复用"，这个复用发生在哪一层？
-- [ ] MCP 相比普通 Function Calling，多出来的成本是什么？（进程管理、序列化开销、调试难度）——什么场景下不该用 MCP
+- [x] **MCP 协议层** —— 已结案，手写裸客户端抓了完整报文。六个发现：协议版本**降级协商**
+      （提 2026-07-28 → 回 2025-11-25）；capabilities 双向声明；**`instructions` 会进 system prompt
+      → 不可信 Server 能改你的模型行为**（这就是 Claude Code 要求显式批准的原因）；
+      **工具错误不是 JSON-RPC error 而是 `result.isError`**（协议错误给客户端，工具错误给模型）；
+      参数校验在服务端；8 个工具的 schema ≈ **1239 tokens 常驻 system prompt**
+- [x] **复用发生在哪一层** —— `inputSchema` 与 Ollama 的 `parameters` 是**同一个 JSON Schema**，
+      适配器只有 4 行。所以复用**不在 schema 层**（那本来就是事实标准），
+      而在**发现+传输+生命周期+元数据**层。`annotations` 是 MCP 独有的
+- [x] **什么场景不该用 MCP** —— 已结案，基于实测成本：schema 常驻 1239 tokens、
+      独立进程、序列化往返、**审计边界失效**（实测：经 MCP 删 Pod 成功，客户端 `MUTATIONS` 账本为空
+      → 审计必须做在协议层）。单进程自用、无跨客户端复用需求时，直接函数调用更好
 
 ### ③ 落仓
 
@@ -723,5 +736,37 @@ Phase 1 遗留的「temperature=0 下 Agent 行为不可复现」。
 **踩的坑**
 我自己脚本里的「是否重复执行」判定写错了，第一版打印了错误的 ✅。
 加上「崩溃时待执行的工具」这个仪表后才看清真相。**判定逻辑本身也要被审查。**
+
+### 2026-07-30 · MCP 专题（同日）
+
+**做了什么**
+写 K8s MCP Server（8 工具，完整 annotations）→ **手写裸 JSON-RPC 客户端**抓完整协议报文
+→ 把 Server 接进自己的 Ollama Agent → 注册到 Claude Code。详见 `docs/phase2-why.md`。
+
+**最大的收获（三条）**
+
+1. **MCP 真正标准化的不是 schema，是元数据和生命周期。**
+   `inputSchema` 与 Ollama 的 `parameters` 是同一个 JSON Schema，适配器 4 行。
+   独有的是 `annotations` 四个 hint —— 其中 `destructiveHint` 正是我们撞墙时手工搓的
+   `DESTRUCTIVE` 集合，`idempotentHint` 正是上一节「幂等性是工具的责任」的结论。
+   `bridge_agent.py` 已把门控依据从私有集合换成协议字段，实测拦下成功。
+   但 hint 是服务端**自报**的，所以额外保留客户端兜底名单 —— 门控的权威判断必须在自己这侧。
+
+2. **`instructions` 会进 system prompt** —— 不可信 MCP Server 能直接改你的模型行为，
+   比 Phase 1 那个工具返回值注入更靠上游。这解释了 Claude Code 为什么对项目级
+   `.mcp.json` 要求显式批准（实测 `⏸ Pending approval`）。**架构层门控，不是叮嘱。**
+
+3. **进程边界一变，审计边界必须重划。** 实测：经 MCP 删掉一个 Pod 成功，
+   但客户端的 `MUTATIONS` 审计账本是**空的** —— 记账写在工具内部，工具跑在另一个进程。
+   → **审计必须做在协议层（记录 tools/call）**。
+
+**其他值得记的协议细节**
+- 协议版本是**降级协商**：客户端提 2026-07-28，服务端回 2025-11-25
+- **工具错误不是 JSON-RPC error，是 `result.isError`** —— 协议错误给客户端，工具错误给模型
+  （因为工具失败要回灌让模型改正，所以必须是「成功的响应」）
+- 8 个工具的 schema ≈ **1239 tokens 常驻 system prompt**，这是「不该用 MCP」的主要成本
+
+**判断**
+不该用 MCP 的场景：单进程自用、无跨客户端复用需求 —— 上面每项成本都付，收益为零。
 
 <!-- 下一条从这里开始 -->
