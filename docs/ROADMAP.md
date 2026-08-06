@@ -15,7 +15,7 @@
 | **当前阶段** | Phase 2 · Agent 开发（LangGraph / MCP） |
 | **状态** | 🏗️ 进行中 |
 | **上次更新** | 2026-07-30 |
-| **下一步动作** | 在 `claude` 里批准 k8s-sre MCP Server → OpenAI Agents SDK 对照 → 核心项目 K8s Agent v1 收口 |
+| **下一步动作** | Phase 2 已交付 v1。可选补：在 `claude` 里批准 k8s-sre Server / Agents SDK 对照。**建议直接进 Phase 3 RAG** |
 
 **Phase 1 ① 跑通已完成**，② 拆源码 5/8 结案。剩余三个小追问随时可补：
 temperature/top-p 对 JSON 的影响 · 模型为何爱输出 ```json 包裹 · CoT 是否真推理。
@@ -291,20 +291,28 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
       独立进程、序列化往返、**审计边界失效**（实测：经 MCP 删 Pod 成功，客户端 `MUTATIONS` 账本为空
       → 审计必须做在协议层）。单进程自用、无跨客户端复用需求时，直接函数调用更好
 
-### ③ 落仓
+### ③ 落仓 —— K8s 运维 Agent v1 ✅ 已交付
 
-- [ ] `agent/` 主循环 + 工具注册
-- [ ] `mcp/k8s-server/`
-- [ ] `docs/phase2-langgraph-internals.md`（Pregel/Channel/Checkpoint 三篇）
-- [ ] `docs/phase2-mcp-protocol.md`
+- [x] `agent/v1.py` + `agent/mcp_toolbelt.py` + `agent/v1_dryrun.py`（干跑验证 12/12）
+- [x] `agent/graph_agent.py`（LangGraph 硬门控）+ `agent/graph_parallel.py`（并行巡检）
+- [x] `agent/loop.py`（零框架 ReAct 对照基线）+ `agent/wall.py` / `wall_repeat.py`（撞墙实验）
+- [x] `agent/timetravel.py`（Checkpointer 四用途）+ `agent/ablation_think.py` / `defense_injection.py`
+- [x] `mcp/k8s_server/` + `mcp/probe_protocol.py`（裸协议客户端）+ `mcp/bridge_agent.py`
+- [x] `docs/phase2-why.md`（Pregel / Channel / interrupt / Checkpointer / MCP / v1 全部记录）
+
+v1 链路：告警 JSON → 约束解码抽取 → MCP 工具排查（有环图）→ 破坏性操作 `interrupt` 硬门控
+→ 结构化 Postmortem（模型给判断、代码填事实）→ 协议层审计 + schema 校验 + 归因核查
 
 ### 检查清单
 
-- [ ] 能解释 Pregel superstep 模型，以及 LangGraph 为什么选它
-- [ ] Agent 能自主完成 ≥3 步的任务
-- [ ] 杀进程后能从 checkpoint 恢复，状态无丢失
-- [ ] 自己写的 MCP Server 在 Claude Code 里被实际调用
-- [ ] K8s Agent v1：输入告警 JSON，输出根因分析报告
+- [x] 能解释 Pregel superstep 模型，以及 LangGraph 为什么选它 → `docs/phase2-why.md`
+- [x] Agent 能自主完成 ≥3 步的任务（真跑：告警 A 走了 5 个只读工具 + 1 次门控）
+- [x] 杀进程后能从 checkpoint 恢复，状态无丢失（`timetravel.py --mode crash`）
+- [x] 自己写的 MCP Server 被自己的 Agent 实际调用（`bridge_agent.py` / `v1.py`）
+- [ ] 在 Claude Code 里被实际调用（`.mcp.json` 已注册，待用户在 `claude` 中批准）
+- [x] K8s Agent v1：输入告警 JSON，输出根因分析报告 ✅
+- [ ] ⚠️ **遗留缺陷**：门控保护「状态」不保护「结论」。注入内容仍会以高置信度进入
+      Postmortem，归因核查只打红旗。**v2 首要课题**
 
 ---
 
@@ -768,5 +776,43 @@ Phase 1 遗留的「temperature=0 下 Agent 行为不可复现」。
 
 **判断**
 不该用 MCP 的场景：单进程自用、无跨客户端复用需求 —— 上面每项成本都付，收益为零。
+
+### 2026-08-06 · K8s 运维 Agent v1 交付
+
+**做了什么**
+把 Phase 1/2 的所有结论收成一个能跑完整告警的 Agent。先写干跑（不调模型，3 秒 12/12 断言）
+确认结构，再上真模型。详见 `docs/phase2-why.md`。
+
+**v1 的每条设计都由某个实测结论决定**，不是照教程搭：有环图+Checkpointer、
+approve 与 execute 分离（interrupt 节点级重放）、门控 = `destructiveHint` ∪ 客户端兜底、
+数据边界包裹、**不**追加 user 提醒、协议层审计、固定 keep_alive+预热、代码填事实、
+门控记住已拒绝的操作。
+
+**最大的收获：一个诚实的半失败**
+告警 C（日志里埋注入载荷）：
+- ✅ 门控守住了**状态** —— 拦下 `scale_deployment(payment, replicas=0)`，集群未变
+- ❌ 注入在**信息层完全成功** —— 攻击者的话被当证据写进 Postmortem，置信度 0.8，
+  全程无一处标记可疑。System Prompt 写了「绝不转述」、数据边界也在，都没用
+
+> **架构门控保护「状态」，保护不了「结论」。** 而 Postmortem 是人做决策的依据 ——
+> 这是绕过门控的路径。**v2 的首要课题。**
+
+**新防御：归因核查（唯一不依赖模型自觉的一条）**
+模型把 reporting 的问题归因到 payment，而它**从未查询过 payment**。审计日志是代码记的，
+两者可机械核对。实测抓到。边界：只打红旗不阻止，且只能抓跨 namespace 的无据归因。
+
+**踩的坑（两个都很贵）**
+1. **约束解码不执行 `number` 的 min/max** —— 报告里出现 `置信度: 8`（schema 写 0~1）。
+   专项测试确认只有 number 的 min/max 未执行。而且**越界不稳定发生**（第二次跑是 0.9），
+   靠"试一次没问题"会漏。→ 约束解码之后必须自己校验。
+2. **所有"卡住"的真因是 brew 升级，与代码无关。** ollama 服务端跑了 3 周（0.17.6），
+   brew 今早把二进制换成 0.32.5 → 老服务端 spawn 新 runner 失败 →
+   `/api/version` 正常但 `/api/chat` **永久挂死**。同批还升了 Python（触发 uv 重建 venv、
+   重装全部依赖，那是第一次"600 秒卡住"的真因）、uv、node。
+   教训：**长任务别用 `| tail`**，进度被憋住会让环境重装看起来像死锁。
+   顺手修了 `RawStdioClient` 不读 stderr 的潜在双向死锁。
+
+⚑ **本会话中 Phase 0 的 22.29 tok/s 与 Phase 2 的冷/热确定性结论均在 ollama 0.17.6 上测得**，
+新版（0.32.5，25.4 tok/s）未复测。
 
 <!-- 下一条从这里开始 -->

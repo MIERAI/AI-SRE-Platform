@@ -16,6 +16,7 @@ MCP over stdio 就是【按行分隔的 JSON-RPC 2.0】，没别的。
 import json
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -37,6 +38,20 @@ class RawStdioClient:
         self.verbose = verbose
         self.bytes_sent = self.bytes_recv = 0
 
+        # 必须持续排空 stderr。不读的话，服务端一旦往 stderr 写满管道缓冲区
+        # 就会阻塞在 write，而我们阻塞在 stdout 的 readline —— 双向死锁，
+        # 表现是「进程活着、CPU 0%、永远不返回」，极难定位。
+        self.stderr_lines: list[str] = []
+        self._drain = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._drain.start()
+
+    def _drain_stderr(self):
+        try:
+            for line in self.p.stderr:
+                self.stderr_lines.append(line)
+        except Exception:
+            pass
+
     def _send(self, obj: dict, label: str):
         line = json.dumps(obj, ensure_ascii=False)
         self.bytes_sent += len(line.encode())
@@ -49,8 +64,8 @@ class RawStdioClient:
     def _recv(self, label: str) -> dict:
         line = self.p.stdout.readline()
         if not line:
-            err = self.p.stderr.read()
-            raise RuntimeError(f"服务端没有响应就退出了。stderr:\n{err}")
+            raise RuntimeError("服务端没有响应就退出了。stderr:\n"
+                               + "".join(self.stderr_lines[-30:]))
         self.bytes_recv += len(line.encode())
         obj = json.loads(line)
         if self.verbose:
