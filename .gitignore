@@ -14,3 +14,5 @@ labs/**/out/
 .env
 agent/parser/out_extract_*.json
 agent/out_checkpoints.sqlite*
+rag/corpus/
+rag/store/
