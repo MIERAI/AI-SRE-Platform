@@ -171,6 +171,67 @@ Einstein / T20 World Cup / Andes。用在 K8s 运维语料上，最好情况是�
 
 ---
 
+## 真跑 Ragas：三个文档里不会写的坑
+
+`evaluation/ragas_eval.py` —— 全本地（Ollama 驱动裁判与 embedding），
+数据来自本仓库真实资产：29 条查询 → 我们自己的索引检索 Top-K →
+qwen3 基于 context 生成回答 → gold runbook 的 Diagnosis+Mitigation 段作参考答案。
+
+### ① 依赖脆弱性：整个包因为一个没人用的云厂商导入而无法 import
+
+```
+ragas 0.4.3  llms/base.py:12   from langchain_community.chat_models.vertexai import ChatVertexAI
+             llms/base.py:13   from langchain_community.llms import VertexAI
+
+langchain-community 0.4.2 已移除该模块（整个包正在 sunset）
+=> ModuleNotFoundError，ragas 完全无法导入
+```
+
+读源码确认这两个类**只出现在一个 `isinstance` 检查的列表**里
+（`MULTIPLE_COMPLETION_SUPPORTED`）。用 Ollama 永远不会命中，
+所以打桩安全 —— `isinstance` 返回 False 正是本来就该有的答案。
+
+> 一个不用的可选依赖能让整个评测框架不可用。**评测工具链的依赖面比业务代码脆弱得多**
+> —— 而它恰恰是你用来判断业务代码好坏的东西。
+
+### ② 默认并发在本地模型上必然全面超时
+
+第一次跑，24 个 job 里绝大多数 `TimeoutError`。原因不是模型慢：
+
+```
+RunConfig 默认   max_workers = 16   timeout = 180
+```
+
+**那是按「后端是云 API、有真并发」设计的。** 而 Phase 3 实测过
+**Ollama 单实例串行处理请求**（并发 3 次比串行还慢 0.89x，延迟等差叠加 = 排队）。
+16 个 job 并发发出 → 全部排队 → 每个 job 的墙钟时间都包含排队 → 撞穿 180s 超时。
+
+修法：`RunConfig(max_workers=1, timeout=900)`。改完不再超时。
+
+### ③ 成本：评测比被评测的系统贵约 50 倍 ✅
+
+实测（qwen3:14b，串行）：
+
+```
+单个 job（1 样本 × 1 指标）     ~248 s
+ 6 样本 × 4 指标 =  24 job      99 分钟
+29 样本 × 4 指标 = 116 job     479 分钟（8 小时）
+
+对比：生成这 6 条回答本身   ~120 s
+```
+
+为什么这么贵：Faithfulness 一条要**两次** LLM 调用（先拆原子陈述、再逐条判定），
+而 prompt 里还塞着 context（3 × ~665 字符）+ ragas 自带的通用领域 few-shot。
+单次调用 prompt 就有两三千 token。
+
+> **CI 含义：本地 14B 裁判跑 Ragas 无法进 CI。** 每次改动跑全量 29 条要 ~8 小时。
+>
+> 可行的方向（未验证）：只跑 1-2 个关键指标 / 换更小的裁判模型 /
+> 抽样而非全量 / 用有真并发的云 API。**这几条都需要先验证「小裁判是否仍然可信」** ——
+> 又回到本阶段第一节：**换裁判就要重新验裁判**。
+
+---
+
 ## 尚未回答
 
 - ~~Ragas 的指标怎么算的~~ ✅ 已结案（见上）
