@@ -26,13 +26,18 @@
     uv run mcp/k8s_server/server.py            # stdio（Claude Code 用这个）
 """
 
+import json
+import re
 import sys
+import urllib.request
 from pathlib import Path
 
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "agent"))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "agent"))
+sys.path.insert(0, str(ROOT / "rag"))
 from tools import cluster  # noqa: E402
 
 server = MCPServer(
@@ -105,6 +110,72 @@ def kubectl_delete_pod(namespace: str, pod: str) -> str:
 def kubectl_scale_deployment(namespace: str, deployment: str, replicas: int) -> str:
     """【会修改集群】调整 Deployment 副本数。replicas=0 会停掉全部实例。"""
     return cluster.kubectl_scale_deployment(namespace, deployment, replicas)
+
+
+# ── 知识检索 ──────────────────────────────────────────────────────────────
+#
+# 检索策略是实测出来的（docs/phase3-why.md），不是照抄教程：
+#   · 一个 runbook 一个 chunk —— 512 token 固定切片会让每个 chunk 跨 3.3 个 runbook
+#   · 纯向量而非混合检索 —— RRF 无条件融合会把 BM25 的坏排名引进来（R@1 76%→66%）
+#   · CJK 查询先翻译成英文 —— 语料 100% 英文，直接检索中日文 R@3 只有 56%，翻译后 100%
+#
+# ⚠️ 最要紧的一条：runbook 是【通用知识】，不是【本集群的事实】。
+#    「怎么排查 OOM」和「这个 Pod 现在是不是 OOM」是两回事。
+#    工具输出里必须把这个区分打出来，否则模型会拿通用建议当集群证据 ——
+#    那正是 Phase 2 那个「洗白」缺陷的另一条入口。
+
+CJK_RE = re.compile(r"[぀-ヿ㐀-䶿一-鿿]")
+
+
+def _to_english(q: str) -> str:
+    """CJK 查询先翻成英文。实测把中日文 R@3 从 56% 拉到 100%。"""
+    payload = {"model": "qwen3:14b", "stream": False, "think": False, "keep_alive": "30m",
+               "options": {"temperature": 0, "num_predict": 60},
+               "messages": [{"role": "system", "content":
+                             "把用户的运维故障描述翻译成简洁的英文技术查询。"
+                             "只输出英文，不要解释，不要引号。"},
+                            {"role": "user", "content": q}]}
+    req = urllib.request.Request("http://localhost:11434/api/chat",
+                                 data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=300) as r:
+        return json.load(r)["message"]["content"].strip()
+
+
+@server.tool(annotations=READ_ONLY)
+def search_runbook(query: str, top_k: int = 3) -> str:
+    """检索运维 Runbook 知识库，拿到某类故障的标准排查步骤与处置建议。
+
+    输入用症状描述或告警名都可以，中文/日文/英文均可。
+    返回的是【通用运维知识】，不是当前集群的状态 —— 要确认集群实际情况请用 kubectl_* 工具。
+    """
+    from index import search as vec_search   # 延迟导入，避免没建索引时服务起不来
+
+    used = query
+    if CJK_RE.search(query):
+        try:
+            used = _to_english(query)
+        except Exception:
+            pass                                   # 翻译失败就用原文，别让工具挂掉
+
+    try:
+        hits = vec_search(used, "whole", max(1, min(top_k, 5)))
+    except FileNotFoundError:
+        return "Error: 知识库索引不存在。先运行 `uv run rag/index.py build`。"
+
+    if not hits:
+        return "未找到相关 Runbook。建议按常规流程人工排查。"
+
+    out = [f"检索词: {used!r}" + (f"（原始查询 {query!r} 已译为英文）" if used != query else ""),
+           "",
+           "⚠️ 以下是【通用运维知识】，来自公开 Runbook 库，**不是本集群的实际状态**。",
+           "   要判断本集群发生了什么，必须用 kubectl_* 工具取得的观测数据作为证据。",
+           ""]
+    for score, c in hits:
+        out.append(f"── [{c.trust}] {c.doc}  (相似度 {score:.3f}, 来源 {c.source})")
+        out.append(c.text.strip())
+        out.append("")
+    return "\n".join(out)
 
 
 if __name__ == "__main__":

@@ -126,8 +126,11 @@ POSTMORTEM_SCHEMA = {
 
 SYSTEM_INVESTIGATE = """你是 Kubernetes SRE，正在排查一条生产告警。
 
-排查原则：
-1. 不要凭现象猜。先用只读工具确认状态，再下结论。
+排查流程：
+0. 先用 search_runbook 查这类告警的标准排查步骤（如果该工具可用）。
+   注意它返回的是【通用运维知识】，不是本集群的状态 —— 它只告诉你「该查什么」，
+   不能作为「本集群发生了什么」的证据。
+1. 再用 kubectl_* 工具确认本集群的实际状态。**结论的证据必须来自这一步。**
 2. 报错的服务不一定是出问题的服务。日志显示上游依赖异常时，
    要去上游所在的 namespace 继续查（get_events 能看到滚动更新）。
 3. 拿到足够证据后就停止调用工具，直接给出结论。
@@ -231,8 +234,9 @@ def _key(c: dict) -> str:
     return f"{f['name']}:{json.dumps(f.get('arguments') or {}, sort_keys=True)}"
 
 
-def make_graph(belt: Toolbelt, *, verbose=True, advise_only=False):
-    tools = belt.ollama_tools()
+def make_graph(belt: Toolbelt, *, verbose=True, advise_only=False, use_rag=True):
+    tools = [t for t in belt.ollama_tools()
+             if use_rag or t["function"]["name"] != "search_runbook"]
     # 集群里有哪些 namespace —— 归因核查要用。这次探测不计入本轮审计。
     _ns_body, _ = belt.client.call_tool("list_namespaces", {})
     all_namespaces = [ln.split()[0] for ln in _ns_body.splitlines() if ln.strip()]
@@ -358,11 +362,12 @@ def make_graph(belt: Toolbelt, *, verbose=True, advise_only=False):
 
 # ── 驱动 ──────────────────────────────────────────────────────────────────
 
-def run_alert(key: str, *, approve_all: bool, verbose=True, advise_only=False) -> dict:
+def run_alert(key: str, *, approve_all: bool, verbose=True, advise_only=False,
+              use_rag=True) -> dict:
     alert = ALERTS[key]
     belt = Toolbelt.connect()
     try:
-        graph = make_graph(belt, verbose=verbose, advise_only=advise_only)
+        graph = make_graph(belt, verbose=verbose, advise_only=advise_only, use_rag=use_rag)
         with SqliteSaver.from_conn_string(":memory:") as saver:
             app = graph.compile(checkpointer=saver)
             cfg = {"configurable": {"thread_id": f"v1-{key}"}}
@@ -433,6 +438,7 @@ def main():
     p.add_argument("--approve-all", action="store_true")
     p.add_argument("--advise-only", action="store_true",
                    help="只分析不动手（默认允许尝试修复，从而经过审批门控）")
+    p.add_argument("--no-rag", action="store_true", help="对照组：不给 search_runbook 工具")
     args = p.parse_args()
 
     print("预热模型（固定 keep_alive，避免加载状态变成隐藏变量）…")
@@ -443,9 +449,11 @@ def main():
         print("\n" + "=" * 96)
         print(f"告警 {k} · {ALERTS[k]['note']}")
         print(f"门控策略：{'全批准' if args.approve_all else '全拒绝'}"
-              f"   模式：{'只分析' if args.advise_only else '允许尝试修复'}")
+              f"   模式：{'只分析' if args.advise_only else '允许尝试修复'}"
+              f"   RAG：{'关（对照组）' if args.no_rag else '开'}")
         print("=" * 96)
-        show(k, run_alert(k, approve_all=args.approve_all, advise_only=args.advise_only))
+        show(k, run_alert(k, approve_all=args.approve_all, advise_only=args.advise_only,
+                          use_rag=not args.no_rag))
 
 
 if __name__ == "__main__":
