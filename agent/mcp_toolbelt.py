@@ -138,11 +138,15 @@ class Toolbelt:
 
     # ── 执行：唯一的副作用出口，审计在这里落账 ──────────────────────────
 
+    # 防御开关（供 evaluation/security_matrix.py 做对照实验）
+    use_boundary: bool = True     # 工具返回是否包 <untrusted_tool_output> 边界
+    use_gate: bool = True         # 破坏性操作是否走人工审批门控
+
     def invoke(self, name: str, args: dict, *, approved: bool | None) -> str:
         """approved=None 表示只读工具无需审批；False 表示被拒绝，不执行。"""
         seq = len(self.audit) + 1
-        gated = self.needs_approval(name)
-        reason = self.gate_reason(name)
+        gated = self.needs_approval(name) and self.use_gate
+        reason = self.gate_reason(name) if gated else ""
 
         if gated and not approved:
             self.audit.append(AuditEntry(seq, name, args, True, False, False, False, reason))
@@ -152,7 +156,7 @@ class Toolbelt:
         body, is_error = self.client.call_tool(name, args)
         self.audit.append(AuditEntry(seq, name, args, gated, approved, True, is_error,
                                      reason, output=body))
-        return BOUNDARY.format(tool=name, body=body)
+        return BOUNDARY.format(tool=name, body=body) if self.use_boundary else body
 
     # ── 审计输出 ──────────────────────────────────────────────────────────
 
