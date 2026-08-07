@@ -12,10 +12,13 @@
 
 | 项 | 值 |
 |---|---|
-| **当前阶段** | Phase 3 · 企业级 RAG |
-| **状态** | 🏗️ 进行中 —— ① 跑通 6/8，② 拆源码 2/5 |
+| **当前阶段** | Phase 4 · Evaluation 评测体系 |
+| **状态** | 🏗️ 进行中 |
 | **上次更新** | 2026-08-07 |
-| **下一步动作** | Reranker（cross vs bi-encoder）· HNSW 规模阈值 · Embedding 原理 · 加 RAG 前后的量化对比 |
+| **下一步动作** | 先量 LLM-as-judge 的噪声底与偏置，再决定 Ragas/DeepEval 值不值得上 |
+
+**Phase 3 未完（不阻塞后续）**：② 拆源码剩 Embedding 原理 · HNSW 规模阈值；
+加 RAG 前后的量化对比（`--no-rag` 开关已就绪，未跑成数字）。
 
 **Phase 1 ① 跑通已完成**，② 拆源码 5/8 结案。剩余三个小追问随时可补：
 temperature/top-p 对 JSON 的影响 · 模型为何爱输出 ```json 包裹 · CoT 是否真推理。
@@ -30,8 +33,8 @@ temperature/top-p 对 JSON 的影响 · 模型为何爱输出 ```json 包裹 · 
 | **Phase 0** | 从零训小 GPT（MLX，10–50M 参数） | 2–3 天 | ⏸️ 暂停（跳 1 完成，追问 ②③⑤⑦ 与跳 2 待补） |
 | **Phase 1** | Prompt · Function Calling · Structured Output | 2 周 | ✅ ① 完成，② 5/8 结案 |
 | **Phase 2** | Agent：LangGraph · Agents SDK · MCP | 4 周 | ✅ 已交付 v1（② 6/6 结案） |
-| **Phase 3** | 企业级 RAG（Runbook / Postmortem） | 3 周 | 🏗️ 进行中（① 6/8，② 2/5） |
-| **Phase 4** | Evaluation：Ragas · DeepEval | 2 周 | ⬜ |
+| **Phase 3** | 企业级 RAG（Runbook / Postmortem） | 3 周 | ✅ 主线完成（① 6/8，② 3/5，余项不阻塞） |
+| **Phase 4** | Evaluation：Ragas · DeepEval | 2 周 | 🏗️ 进行中 |
 | **Phase 5** | LoRA / QLoRA（源码级，非浅尝） | 1.5 周 | ⬜ |
 | **Phase 6** | 生产部署：推理引擎 · K8s · 监控 | 3 周 | ⬜ |
 
