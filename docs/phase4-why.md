@@ -92,12 +92,91 @@ Ragas / DeepEval 的绝大多数指标底层都是 **LLM-as-judge**。
 
 ---
 
+## Ragas 的指标到底怎么算的 ✅（读源码，不是读文档）
+
+`.venv/.../ragas/metrics/` 下逐个文件读出来的。**四个核心指标没有一个是 0-10 打分，
+全是二值判定 + 聚合。**
+
+| 指标 | 裁判被问什么 | 输入 | 需标注 | 算分方式 |
+|---|---|---|---|---|
+| **Faithfulness** | ① 把 response 拆成原子陈述 ② 每条能否从 context 直接推出 (1/0) | question, **response**, context | ❌ | 命中数 / 总数 |
+| **Context Recall** | **reference** 逐句能否归因到 context (Yes/No) | question, context, **reference** | ✅ | 命中数 / 总数 |
+| **Context Precision** | 每个 context 对得出 answer 有没有用 (1/0) | question, answer, contexts | ❌ | **Average Precision**（含排名） |
+| **Answer Relevancy** | 从 response **反向生成 question** + 判 noncommittal | question, response | ❌ | 生成 question 与原 question 的 **embedding 余弦** |
+
+### 原文 instruction（`_faithfulness.py`，两次 LLM 调用）
+
+```
+第一次（拆解）
+  "Given a question and an answer, analyze the complexity of each sentence in the answer.
+   Break down each sentence into one or more fully understandable statements.
+   Ensure that no pronouns are used in any statement. Format the outputs in JSON."
+
+第二次（逐条判定）
+  "Your task is to judge the faithfulness of a series of statements based on a given context.
+   For each statement you must return verdict as 1 if the statement can be directly inferred
+   based on the context or 0 if the statement can not be directly inferred based on the context."
+```
+
+### ⚑ 这修正了我上一节的推断
+
+我在噪声实验后写过「Ragas 多为 pointwise，会有天花板效应」——**不准确**。
+
+> 它确实逐项判定，但**分辨力来自「把回答拆成 N 条原子陈述」，不是分数刻度**。
+> N 条原子陈述的二值判定 = N+1 档的分数。**这恰恰是绕开天花板效应的设计。**
+> 有天花板的是我那个 0-10 单分裁判。
+
+### 为什么 Context Recall 需要 ground truth 而 Faithfulness 不需要 ✅
+
+`_context_recall.py:141` 直接写着 `answer=row["reference"]` —— 它把**参考答案**
+喂进那个「逐句判断能否归因到 context」的 prompt。
+
+```
+Faithfulness    问「回答里的话，context 里有依据吗」
+                -> 内部一致性检查，response ↔ context 对照即可，不需要知道正确答案
+
+Context Recall  问「【应该】被检索到的信息，实际检索到了多少」
+                -> 要定义「应该」，必须有一个已知完整的参考答案
+```
+
+**最实用的推论：**
+
+> **线上能监控幻觉，监控不了漏检。**
+>
+> · Faithfulness / Answer Relevancy / Context Precision 只用运行时就有的东西
+>   （query + retrieved contexts + response）-> **可无标注在线上跑**
+> · Context Recall 必须有人工标注 -> **只能离线在测试集上跑**
+
+### 三个读源码才能发现的坑
+
+**① few-shot 示例是通用领域的。** 四个指标都带 `examples`，内容是
+Einstein / T20 World Cup / Andes。用在 K8s 运维语料上，最好情况是无用，
+也可能把裁判往通识方向带。这是接自有语料时要评估的第一件事。
+
+**② Answer Relevancy 靠 embedding 余弦，不是 LLM 打分。**
+`_answer_relevance.py:96-126`：LLM 只负责「从 answer 反推 question」和「判 noncommittal」，
+最终分数是 `cosine(embed(生成的question), embed(原question))`。
+**因此它继承 Phase 3 发现的全部 embedding 局限** —— 包括跨语言：
+中文/日文提问 + 英文语料的组合，这个指标会失真。
+
+**③ Context Precision 算的是 Average Precision，奖励「相关的排在前面」。**
+所以它对**检索顺序**敏感。Phase 3 里 reranker 把 R@1 从 76% 提到 90%（R@3 不变），
+这个指标会明显上升，而 Context Recall 不会动。
+**两个指标测的是检索的不同侧面，不能只看一个。**
+
+### ⚠️ 当前无法直接运行
+
+`import ragas` 报 `ModuleNotFoundError: No module named 'langchain_community.chat_models.vertexai'`。
+读源码不受影响；要实际跑需要补装 `langchain-community`（未装）。
+
+---
+
 ## 尚未回答
 
-- Ragas 的指标到底怎么算的 —— 读源码里 LLM-as-judge 的**实际 prompt**
-- 为什么 Context Recall 需要 ground truth 而 Faithfulness 不需要
-  （这决定哪些指标能在线上无标注地跑）
+- ~~Ragas 的指标怎么算的~~ ✅ 已结案（见上）
+- ~~Context Recall 为何需要 ground truth~~ ✅ 已结案（见上）
 - 自我偏好偏置：qwen3 会不会偏袒自己生成的答案（可用 deepseek-r1 做对照）
+- 补装 `langchain-community` 让 ragas 可运行，并评估通用领域 few-shot 对运维语料的影响
 - 位置偏置用**接近的一对**重测
 - 评测本身的 token / 时间成本，以及在 CI 里跑的可行性
 - 把 Phase 1（20 条告警）与 Phase 3（29 条查询）两套测试集接进 Ragas/DeepEval
