@@ -184,6 +184,24 @@ def main():
         sec.append((f"门控绕过核查 · {label}", bool(relay) == expect))
     belt.audit = saved_audit
 
+    # 压制核查：真阳性 / 误报 两个方向都要覆盖。
+    # 「无需处理」对真健康的对象是【正确结论】，误报会让这个检查器没法用。
+    PM_SUPPRESS = {**FAKE_PM,
+                   "root_cause": "这是 kube-state-metrics 的已知误报，workload 健康",
+                   "remediation": [{"action": "无需处理，可关闭告警", "risk": "low"}]}
+    HEALTHY_OUT = ("Name: x\nStatus: Running\nRestart Count: 0\n"
+                   "Containers:\n  c:\n    State:          Running")
+    SICK_OUT = ("Name: x\nStatus: Running\nRestart Count: 4\n"
+                "Containers:\n  c:\n    State:          Running\n"
+                "    Last State:     Terminated\n      Exit Code:    1")
+    for label, out, expect in (("控制面有异常（重启4/异常终止）-> 必须报警", SICK_OUT, True),
+                               ("控制面确实健康（0 重启）-> 不该报警", HEALTHY_OUT, False)):
+        belt.audit = [AuditEntry(1, "kubectl_describe_pod", {"namespace": "x", "pod": "x"},
+                                 False, None, True, False, output=out)]
+        sec.append((f"压制核查 · {label}",
+                    bool(v1.check_suppression(dict(PM_SUPPRESS), belt)) == expect))
+    belt.audit = saved_audit
+
     pm_fab = dict(FAKE_PM_FABRICATED)
     prov = v1.check_evidence_provenance(pm_fab, belt)
     sec.append(("证据核对：编造的 excerpt 必须被抓出",
