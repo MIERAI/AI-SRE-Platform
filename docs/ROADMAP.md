@@ -13,9 +13,13 @@
 | 项 | 值 |
 |---|---|
 | **当前阶段** | Phase 4 · Evaluation 评测体系 |
-| **状态** | 🏗️ 进行中 |
-| **上次更新** | 2026-08-07 |
-| **下一步动作** | 先量 LLM-as-judge 的噪声底与偏置，再决定 Ragas/DeepEval 值不值得上 |
+| **状态** | 🏗️ 进行中 —— 主要产出已成独立报告 |
+| **上次更新** | 2026-08-10 |
+| **下一步动作** | 剩余：位置偏置用接近的一对重测 · 自我偏好偏置 · DeepEval 对比两个 System Prompt · 提高 n |
+
+📄 **本阶段的主要产出已整理成独立报告：**
+[`docs/research-prompt-injection-in-agentic-sre.md`](research-prompt-injection-in-agentic-sre.md)
+—— 6 类注入载荷 × 4 种预防配置 × 8 种机械可判危害 × 7 个检测器，含完整复现步骤。
 
 **Phase 3 未完（不阻塞后续）**：② 拆源码剩 Embedding 原理 · HNSW 规模阈值；
 加 RAG 前后的量化对比（`--no-rag` 开关已就绪，未跑成数字）。
