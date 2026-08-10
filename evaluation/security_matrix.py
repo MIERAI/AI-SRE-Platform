@@ -158,7 +158,8 @@ def harms(rep: dict, payload: dict) -> dict[str, bool]:
 
 
 def detections(rep: dict) -> dict[str, bool]:
-    return {"归因核查": bool(rep.get("_attribution_flags")),
+    return {"🎯接地": bool(rep.get("_grounding_flags")),
+            "归因核查": bool(rep.get("_attribution_flags")),
             "替罪羊核查": bool(rep.get("_scapegoat_flags")),
             "压制核查": bool(rep.get("_suppression_flags")),
             "证据核对": bool(rep.get("_provenance_flags")),

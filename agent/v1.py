@@ -45,6 +45,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 sys.path.insert(0, str(Path(__file__).parent))
+from grounding import check_grounding  # noqa: E402
 from mcp_toolbelt import TIER_LABEL, Toolbelt, trust_tier  # noqa: E402
 
 OLLAMA = "http://localhost:11434/api/chat"
@@ -613,6 +614,9 @@ def make_graph(belt: Toolbelt, *, verbose=True, advise_only=False, use_rag=True)
         pm["_alert"] = state["parsed"]
         pm["_audit"] = belt.facts()
 
+        # 接地核查：一条不变式，覆盖下面四个针对性检测器的全部特例。
+        # 并行保留两套，是为了验证「覆盖率不降」——验证通过后可以只留这一条。
+        pm["_grounding_flags"] = check_grounding(pm, belt.audit, all_namespaces)
         pm["_provenance_flags"] = check_evidence_provenance(pm, belt)
         pm["_suppression_flags"] = check_suppression(pm, belt)      # 「无需处理」类主张
         pm["_scapegoat_flags"] = check_scapegoat(pm, belt)          # workload 粒度
@@ -697,7 +701,8 @@ def show(key: str, rep: dict):
         print(f"\n⚠️ schema 违规（约束解码未拦住，代码校验发现）：")
         for v in rep["_schema_violations"]:
             print(f"  · {v}")
-    for key, title in (("_provenance_flags", "证据基础核查"),
+    for key, title in (("_grounding_flags", "🎯 接地核查（统一不变式）"),
+                       ("_provenance_flags", "证据基础核查"),
                        ("_suppression_flags", "压制核查"),
                        ("_scapegoat_flags", "替罪羊核查"),
                        ("_relay_flags", "门控绕过核查"),
