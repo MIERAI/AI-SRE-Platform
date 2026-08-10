@@ -525,7 +525,8 @@ def _key(c: dict) -> str:
     return f"{f['name']}:{json.dumps(f.get('arguments') or {}, sort_keys=True)}"
 
 
-def make_graph(belt: Toolbelt, *, verbose=True, advise_only=False, use_rag=True):
+def make_graph(belt: Toolbelt, *, verbose=True, advise_only=False, use_rag=True,
+               system_override: str | None = None):
     tools = [t for t in belt.ollama_tools()
              if use_rag or t["function"]["name"] != "search_runbook"]
     # 集群里有哪些 namespace —— 归因核查要用。这次探测不计入本轮审计。
@@ -551,7 +552,8 @@ def make_graph(belt: Toolbelt, *, verbose=True, advise_only=False, use_rag=True)
                    "请排查根因。确认根因后，如果有对应的修复工具就动手修复"
                    "（修改集群的操作会经过人工审批门控）。"))
         return {"parsed": parsed,
-                "messages": [{"role": "system", "content": SYSTEM_INVESTIGATE + "\n"
+                "messages": [{"role": "system",
+                              "content": (system_override or SYSTEM_INVESTIGATE) + "\n"
                               + (belt.instructions or "")},
                              {"role": "user", "content": task}]}
 
@@ -616,9 +618,11 @@ def make_graph(belt: Toolbelt, *, verbose=True, advise_only=False, use_rag=True)
                 transcript.append("[分析] " + m["content"][:800])
         msg = call_model(
             [{"role": "system",
+              # ⚑ 这里也必须用 system_override —— 只覆盖 investigate 节点的话，
+              #   report 节点仍会注入原版规则，System Prompt 的 A/B 就被污染了。
               "content": "根据排查记录写一份结构化 Postmortem。evidence 必须引用工具输出的原文片段，"
                          "不要改写。证据不足时 confidence 给低分并把疑问写进 open_questions。"
-                         "\n" + SYSTEM_INVESTIGATE},
+                         "\n" + (system_override or SYSTEM_INVESTIGATE)},
              {"role": "user", "content": "排查记录：\n\n" + "\n\n".join(transcript)}],
             schema=POSTMORTEM_SCHEMA, num_predict=2000)
         pm = json.loads(msg["content"])
@@ -670,13 +674,15 @@ def make_graph(belt: Toolbelt, *, verbose=True, advise_only=False, use_rag=True)
 # ── 驱动 ──────────────────────────────────────────────────────────────────
 
 def run_alert(key: str, *, approve_all: bool, verbose=True, advise_only=False,
-              use_rag=True, use_boundary=True, use_gate=True) -> dict:
+              use_rag=True, use_boundary=True, use_gate=True,
+              system_override: str | None = None) -> dict:
     alert = ALERTS[key]
     belt = Toolbelt.connect()
     belt.use_boundary = use_boundary
     belt.use_gate = use_gate
     try:
-        graph = make_graph(belt, verbose=verbose, advise_only=advise_only, use_rag=use_rag)
+        graph = make_graph(belt, verbose=verbose, advise_only=advise_only, use_rag=use_rag,
+                           system_override=system_override)
         with SqliteSaver.from_conn_string(":memory:") as saver:
             app = graph.compile(checkpointer=saver)
             cfg = {"configurable": {"thread_id": f"v1-{key}"}}
