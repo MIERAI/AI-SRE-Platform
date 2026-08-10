@@ -57,6 +57,7 @@ class Entity:
     name: str
     anomalies: list[str]          # 该对象的控制面异常信号；空 = 控制面认为它没问题
     observed: bool                # 是否有该对象的控制面数据
+    node: str = ""                # 所在节点。由调度器写入，应用伪造不了 -> 可做因果前提核对
 
 
 def _norm(s: str) -> str:
@@ -94,12 +95,16 @@ def build_ground_truth(audit) -> dict[str, Entity]:
                 ent = ents.setdefault(name, Entity(name, [], True))
                 ent.observed = True
                 ent.anomalies += sig
+                if len(f) >= 6:
+                    ent.node = f[5]
         elif e.tool == "kubectl_describe_pod":
             name = str(e.arguments.get("pod") or "")
             if not name:
                 continue
             ent = ents.setdefault(name, Entity(name, [], True))
             ent.observed = True
+            if m := re.search(r"^Node:\s*(\S+)", out, re.M):
+                ent.node = m.group(1)
             for rx, tmpl in _ANOMALY_PATTERNS:
                 m = rx.search(out)
                 if m:
@@ -198,6 +203,52 @@ def check_grounding(pm: dict, audit, all_namespaces: list[str] | None = None) ->
                 f"🚩🚩 **接地失败**：报告主张「无需处理 / 已知误报」，"
                 f"但控制面显示 {target} 有异常：{'；'.join(t.anomalies)}。")
 
+    return flags
+
+
+# ── 因果前提核查 ──────────────────────────────────────────────────────────
+#
+# 接地不变式管不了因果方向：攻击者嫁祸给一个【确实有异常】的对象时，
+# 不变式满足（该对象真的有异常），但因果链仍然是假的。实测（P-真凶嫁祸 载荷）
+# 接地核查对此完全失明。
+#
+# 补一条【物理前提】核查：某些因果类型有可机械核对的必要条件。
+#   「资源竞争 / 内存争抢 / noisy neighbor」-> 两个对象必须在【同一节点】上
+# node 字段由调度器写入，应用伪造不了 —— 又是一个攻击者动不了的锚点。
+#
+# 这不是通用的因果推断（那需要依赖图 / 时序 / 干预实验），
+# 而是【对特定因果类型证伪其必要条件】。能证伪的就证伪，剩下的老实标为未验证。
+_CONTENTION = re.compile(
+    r"resource contention|memory contention|cpu contention|noisy neighbou?r"
+    r"|资源竞争|内存(争抢|竞争)|CPU\s*(争抢|竞争)|争抢(资源|内存|CPU)", re.I)
+
+
+def check_causality(pm: dict, audit) -> list[str]:
+    """对特定因果类型证伪其物理必要条件。"""
+    root = _norm(pm.get("root_cause"))
+    if not _CONTENTION.search(root):
+        return []                       # 不是「资源竞争」类主张，本检查不适用
+
+    ents = build_ground_truth(audit)
+    target = str((pm.get("_alert") or {}).get("workload") or "")
+    t = ents.get(target)
+    if not (t and t.node):
+        return []                       # 不知道告警对象在哪个节点，无从核对
+
+    flags = []
+    for name, ent in ents.items():
+        if name == target or not ent.node:
+            continue
+        short = "-".join(name.split("-")[:-2]) if name.count("-") >= 2 else name
+        if not (_norm(name) in root or (len(short) > 6 and _norm(short) in root)):
+            continue
+        if ent.node != t.node:
+            flags.append(
+                f"🚩🚩🚩 **因果前提不成立**：报告主张 {name} 与 {target} 之间存在"
+                f"「资源竞争」，但控制面显示两者在**不同节点**上"
+                f"（{name} 在 {ent.node}，{target} 在 {t.node}）。"
+                f"节点归属由调度器写入、应用伪造不了 —— "
+                f"跨节点不存在本机资源竞争，该因果链物理上不成立。")
     return flags
 
 
