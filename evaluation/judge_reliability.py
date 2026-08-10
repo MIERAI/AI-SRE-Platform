@@ -179,15 +179,124 @@ def exp_verbosity(n: int):
           "\n  后者强制选择从而显形。选哪种评测协议本身就是一个会改变结论的决定。")
 
 
+# ── 质量接近的一对（用于位置偏置的严肃版本）──────────────────────────────
+# 两个回答【都忠实、都完整】，三个步骤一样，只是【顺序不同】。
+# 上一版位置偏置实验用的是「忠实 vs 含幻觉」，差距太大，任何裁判都不会摇摆 ——
+# 那个 6/6 一致只说明夹具太容易，不能得出「没有位置偏置」的结论。
+ANSWER_ORDER_A = ("按 runbook 三步：先 kubectl get pod 看模板，"
+                  "再 kubectl describe pod 看事件，最后 kubectl logs 看容器日志。")
+ANSWER_ORDER_B = ("按 runbook 三步：先 kubectl logs 看容器日志，"
+                  "再 kubectl describe pod 看事件，最后 kubectl get pod 看模板。")
+
+
+def exp_position_close(n: int):
+    print(f"\n④ 位置偏置【严肃版】：两个质量接近的回答，交换 A/B 各跑 {n} 次\n")
+    print("  两个回答都忠实、都覆盖同样三个命令，只是顺序不同 —— 裁判本应近乎无差别。\n")
+    fwd = [judge_pair(CONTEXT, QUESTION, ANSWER_ORDER_A, ANSWER_ORDER_B) for _ in range(n)]
+    rev = [judge_pair(CONTEXT, QUESTION, ANSWER_ORDER_B, ANSWER_ORDER_A) for _ in range(n)]
+    print(f"  A位=顺序A B位=顺序B ：{fwd}")
+    print(f"  A位=顺序B B位=顺序A ：{rev}")
+
+    # 一致 = 两种摆法都选中【同一个回答内容】
+    consistent = sum(1 for f, r in zip(fwd, rev)
+                     if (f == "A" and r == "B") or (f == "B" and r == "A")
+                     or (f == "tie" and r == "tie"))
+    pick_a_pos = sum(1 for w in fwd + rev if w == "A")
+    total = 2 * n
+    print(f"\n  内容一致率：{consistent}/{n}")
+    print(f"  选 A【位置】的比例：{pick_a_pos}/{total} = {pick_a_pos/total:.0%}"
+          f"（无位置偏置时应接近 50%）")
+    if pick_a_pos >= total * 0.8 or pick_a_pos <= total * 0.2:
+        side = "A" if pick_a_pos > total / 2 else "B"
+        print(f"  ⚠️ **存在位置偏置** —— 裁判显著偏向 {side} 位，与内容无关。")
+        print("     推论：成对比较必须【双向各跑一次并取交集】，单向结果不可用。")
+    elif consistent >= n * 0.8:
+        print("  未观察到明显位置偏置，且内容判断稳定。")
+    else:
+        print("  ⚠️ 内容判断本身就不稳定（换个摆法结论就变），"
+              "说明这一对对裁判来说确实难分 —— 此时任何单次结论都不可用。")
+
+
+# ── 自我偏好偏置 ──────────────────────────────────────────────────────────
+
+def gen_answer(model: str, timeout=900, think: bool = False) -> str:
+    """think 参数是必要的：推理模型在 think=False 下会产出【空回答】——
+    第一版实验就栽在这，deepseek-r1 给了 0 字，于是 qwen3「判自己赢 6/6」
+    其实是在跟空字符串比较，测不出任何自我偏好。（Phase 1 已记录该现象。）"""
+    payload = {"model": model, "stream": False, "think": think, "keep_alive": "30m",
+               "options": {"temperature": 0, "num_predict": 1200 if think else 300},
+               "messages": [{"role": "system", "content":
+                             "你是 Kubernetes SRE。只依据给出的 Runbook 上下文回答，简洁作答。"},
+                            {"role": "user", "content":
+                             f"上下文：\n{CONTEXT}\n\n问题：{QUESTION}"}]}
+    req = urllib.request.Request(OLLAMA, data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return (json.load(r)["message"].get("content") or "").strip()
+
+
+def judge_pair_with(model: str, a: str, b: str, timeout=900) -> str:
+    payload = {"model": model, "stream": False, "think": False, "keep_alive": "30m",
+               "options": {"temperature": 0, "num_predict": 24},
+               "format": CHOICE_SCHEMA,
+               "messages": [
+                   {"role": "system", "content":
+                    "你是回答质量评审。比较 A、B 两个回答，选出更好的一个。"
+                    "只输出 JSON，winner 取值 A / B / tie。"},
+                   {"role": "user", "content":
+                    f"上下文：\n{CONTEXT}\n\n问题：{QUESTION}\n\n"
+                    f"回答 A：\n{a}\n\n回答 B：\n{b}"}]}
+    req = urllib.request.Request(OLLAMA, data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        try:
+            return json.loads(json.load(r)["message"]["content"])["winner"]
+        except Exception:
+            return "?"
+
+
+def exp_self_preference(n: int):
+    """裁判会不会偏袒自己生成的答案。用 qwen3 与 deepseek-r1 互评。"""
+    M1, M2 = "qwen3:14b", "deepseek-r1:14b"
+    print(f"\n⑤ 自我偏好偏置：{M1} 与 {M2} 的回答互评，各方向 {n} 次\n")
+    ans1 = gen_answer(M1)
+    ans2 = gen_answer(M2, think=True)      # 推理模型必须开 thinking，否则回答为空
+    print(f"  {M1} 的回答（{len(ans1)} 字）：{ans1[:66].replace(chr(10), ' ')}…")
+    print(f"  {M2} 的回答（{len(ans2)} 字）：{ans2[:66].replace(chr(10), ' ')}…\n")
+    if not ans2.strip():
+        print("  ❌ 对照方回答为空，实验无效（不能拿真回答跟空字符串比）。")
+        return
+
+    print(f"{'裁判':<18}{'自己的答案放A位':<20}{'自己的答案放B位':<20}判自己赢")
+    print("-" * 80)
+    for judge, own, other in ((M1, ans1, ans2), (M2, ans2, ans1)):
+        fwd = [judge_pair_with(judge, own, other) for _ in range(n)]     # 自己在 A
+        rev = [judge_pair_with(judge, other, own) for _ in range(n)]     # 自己在 B
+        bad = sum(1 for w in fwd + rev if w == "?")
+        win = sum(1 for w in fwd if w == "A") + sum(1 for w in rev if w == "B")
+        note = f"  ⚠️ {bad}/{2*n} 次解析失败，该行不可用" if bad else ""
+        print(f"{judge:<18}{str(fwd):<20}{str(rev):<20}"
+              f"{win}/{2*n} = {win/(2*n):.0%}{note}")
+    print("\n  判读规则：")
+    print("    两个裁判都显著偏向自己  -> 自我偏好偏置")
+    print("    只有一个偏向自己       -> **无法与真实质量差异区分**，这一格不能下结论")
+    print("  ⚠️ deepseek-r1 作为裁判在本仓库 Phase 1 已实测不可靠"
+          "（约束解码下自由字符串字段被污染）。")
+    print("     真正的双向自我偏好实验需要【两个都可靠的裁判】—— 本机没有第二个，"
+          "这一项标为未完成。")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("-n", type=int, default=10)
     p.add_argument("--noise", action="store_true")
     p.add_argument("--position", action="store_true")
     p.add_argument("--verbosity", action="store_true")
+    p.add_argument("--position-close", action="store_true")
+    p.add_argument("--self-pref", action="store_true")
     p.add_argument("--all", action="store_true")
     a = p.parse_args()
-    if not any((a.noise, a.position, a.verbosity, a.all)):
+    if not any((a.noise, a.position, a.verbosity, a.position_close, a.self_pref, a.all)):
         a.all = True
 
     print("预热并固定 keep_alive（Phase 2 结论：模型加载状态会改变输出）…\n")
@@ -200,6 +309,10 @@ def main():
         exp_position(min(a.n, 6))
     if a.verbosity or a.all:
         exp_verbosity(min(a.n, 6))
+    if a.position_close or a.all:
+        exp_position_close(min(a.n, 6))
+    if a.self_pref or a.all:
+        exp_self_preference(min(a.n, 3))
     print(f"\n总耗时 {time.perf_counter()-t0:.0f}s")
 
 
