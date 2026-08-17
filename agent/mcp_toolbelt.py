@@ -79,6 +79,9 @@ class AuditEntry:
     is_error: bool
     reason: str = ""
     output: str = ""     # 工具输出原文。存下来才能核对模型引用的 evidence 是不是真的存在
+    # 被输入净化剥离掉的行。**只在审计里，不进模型上下文** ——
+    # Phase 4 的 D3 实测：把「这里有可疑内容」告诉模型，危害率 0/5 -> 5/5。
+    guard_removed: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -141,6 +144,7 @@ class Toolbelt:
     # 防御开关（供 evaluation/security_matrix.py 做对照实验）
     use_boundary: bool = True     # 工具返回是否包 <untrusted_tool_output> 边界
     use_gate: bool = True         # 破坏性操作是否走人工审批门控
+    guard: object = None          # InputGuard 或 None —— 只对 app_content 级工具生效
 
     def invoke(self, name: str, args: dict, *, approved: bool | None) -> str:
         """approved=None 表示只读工具无需审批；False 表示被拒绝，不执行。"""
@@ -154,8 +158,18 @@ class Toolbelt:
                     f"不要重试该操作，请改为向用户报告分析与建议。")
 
         body, is_error = self.client.call_tool(name, args)
+
+        # ── 输入净化 ──────────────────────────────────────────────────────
+        # 只对 app_content 级工具做：那是唯一「内容由被观测方控制」的通道。
+        # 控制面数据（get_pods / describe / events）由 kubelet 与调度器写入，
+        # 应用伪造不了 —— 扫它既浪费调用，又平白增加误伤正常字段的风险。
+        removed: list[str] = []
+        if self.guard is not None and not is_error and trust_tier(name) == "app_content":
+            body, removed = self.guard.sanitize(name, body)
+
+        # ⚑ removed 只写进审计（给人看），**绝不拼进返回给模型的正文**。
         self.audit.append(AuditEntry(seq, name, args, gated, approved, True, is_error,
-                                     reason, output=body))
+                                     reason, output=body, guard_removed=removed))
         return BOUNDARY.format(tool=name, body=body) if self.use_boundary else body
 
     # ── 审计输出 ──────────────────────────────────────────────────────────
@@ -186,7 +200,13 @@ class Toolbelt:
 
     def facts(self) -> dict:
         """交给报告的【事实】部分。这些由代码提供，不问模型 ——
-        模型负责判断，代码负责记账。"""
+        模型负责判断，代码负责记账。
+
+        ⚑ 净化统计**故意不在这里**。facts() 会进模型上下文（报告节点读它），
+          哪怕只写「已剥离 6 行」也是在告诉模型「这里有攻击」——
+          而 Phase 4 的 D3 实测过：这类提示把危害率从 0/5 推到 5/5。
+          要看净化情况用 guard_facts()，它只给人和评测脚本。
+        """
         return {
             "tool_calls_total": len(self.audit),
             "executed": [e.tool for e in self.audit if e.executed],
@@ -196,3 +216,10 @@ class Toolbelt:
             "mcp_server": f"{self.server_info.get('name')} v{self.server_info.get('version')}",
             "protocol_bytes": {"sent": self.client.bytes_sent, "recv": self.client.bytes_recv},
         }
+
+    def guard_facts(self) -> dict:
+        """净化审计 —— **给人和评测脚本，不进模型上下文**。"""
+        rm = [ln for e in self.audit for ln in e.guard_removed]
+        return {"tools_scanned": sum(1 for e in self.audit
+                                     if trust_tier(e.tool) == "app_content" and e.executed),
+                "lines_removed": len(rm), "removed": rm}
