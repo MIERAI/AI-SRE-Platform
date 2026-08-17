@@ -1,0 +1,91 @@
+# AI-SRE Agent 的 Deployment。
+#
+# ⚑ 关键决定：**模型不进这个 Pod。**
+#   实测约束（Phase 5 + Phase 6）：单机 26 GB，wired 已占 13.3 GB，
+#   14B 主模型 9.3 GB + judge 4B 2.5 GB。把推理塞进集群会直接触发 swap，
+#   而 decode 是显存带宽受限的（Phase 0 实测）—— swap 一旦发生，TPOT 会崩。
+#   推理留在宿主机，Agent 通过 OLLAMA_HOST 连出去。
+#   这也符合生产实际：LLM 通常是独立的推理服务，不与业务容器同生命周期。
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sre-agent
+  labels: {app: sre-agent}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: sre-agent}
+  template:
+    metadata:
+      labels: {app: sre-agent}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: agent
+        image: sre-agent:dev
+        imagePullPolicy: IfNotPresent
+        ports:
+        - {name: http, containerPort: 8080}
+        env:
+        # host.docker.internal：从容器连回宿主机上的 Ollama
+        - {name: OLLAMA_HOST,     value: "http://host.docker.internal:11434"}
+        - {name: MAIN_MODEL,      value: "qwen3:14b"}
+        # judge 用 ollama 后端而非 mlx —— 容器里没有 Metal，MLX 会退化到 CPU。
+        # 这是「只有 Mac」这条约束的直接后果，见 docs/phase6-*.md。
+        - {name: GUARD,           value: "ollama:qwen3:4b"}
+        - {name: CANARY_INTERVAL, value: "300"}
+        resources:
+          # Agent 本身不跑模型，所以要的不多；给足是为了容纳一次排查里
+          # 累积的审计与报告（Phase 2 起审计保留了每次工具调用的完整输出）。
+          requests: {memory: "512Mi", cpu: "250m"}
+          limits:   {memory: "2Gi",   cpu: "2"}
+
+        # ── 三种探针，各司其职 ────────────────────────────────────────
+        #
+        # ⚑ startupProbe 是这里最要紧的一个。
+        #   模型加载以【十秒计】，若把这段时间交给 liveness，k8s 会判定失败并重启，
+        #   而重启只会让模型重新加载一遍 —— **把慢启动变成崩溃循环**。
+        #   startupProbe 存在期间 liveness/readiness 都不生效。
+        startupProbe:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 5
+          failureThreshold: 60          # 最多容忍 5 分钟冷启动
+        # 存活：只问进程死没死。**故意不查模型** —— 模型不可用不该靠重启解决。
+        livenessProbe:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 20
+          failureThreshold: 3
+        # 就绪：**真的让模型生成一个 token**。
+        #   只探端口会在两种情况下一路绿灯：①模型还没加载完；
+        #   ②Phase 3 撞到过的「ollama 版本端点正常但 /api/chat 永久挂起」。
+        #   timeout 给足，因为这条探针本身就要等一次真实生成。
+        readinessProbe:
+          httpGet: {path: /readyz, port: http}
+          periodSeconds: 30
+          timeoutSeconds: 20
+          failureThreshold: 2
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sre-agent
+  labels: {app: sre-agent}
+spec:
+  selector: {app: sre-agent}
+  ports:
+  - {name: http, port: 8080, targetPort: http}
+
+---
+# ⚠️ HPA 的注意事项写在这里，但**故意不启用**。
+#
+# LLM 服务不能按 CPU 扩：
+#   · Agent 进程本身几乎不吃 CPU（在等远端推理），CPU 利用率永远很低；
+#   · 真正的瓶颈是推理端的并发与显存带宽，而它在集群外；
+#   · 冷启动以十秒计，等扩容起来，触发扩容的那波流量早已超时。
+# 正确的扩缩信号是**队列深度**（KEDA），且必须配合预热副本。
+# 本机只有一个宿主推理端，扩 Agent 副本只会让它们争抢同一个 Ollama —— 反而更慢。

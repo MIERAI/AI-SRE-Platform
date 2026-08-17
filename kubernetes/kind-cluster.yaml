@@ -1,0 +1,27 @@
+# 本地 kind 集群。
+#
+# ⚠️ **必须用独立的 kubeconfig 创建**：
+#     KUBECONFIG=~/.kube/kind-sre.config kind create cluster --config kubernetes/kind-cluster.yaml
+#
+#   `kind create cluster` 默认会改写 ~/.kube/config 并把 current-context 切到 kind-xxx。
+#   这台机器的 current-context 是 **公司的 GKE staging 集群**
+#   （形如 gke_<project>_<region>_<cluster>）。被切走后很容易在以为是本地的情况下误操作生产环境。
+#   独立文件既避免污染，也让「这是实验集群」这件事在命令行上显式可见。
+#
+# ⚑ **只要一个 control-plane 节点，不加 worker。**
+#   实测约束：宿主机 24 GiB，已 swap 5.8 GiB（见 docs/phase6-why.md §1）。
+#   每多一个节点就多一套 kubelet + containerd，而本阶段要验证的是
+#   探针语义、指标抓取、告警触发 —— 这些一个节点全都能验，多节点只买到调度演示。
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sre
+
+nodes:
+- role: control-plane
+  # NodePort 直接映射到宿主机，省掉 port-forward —— 后者是前台进程，
+  # 会话一断监控就断，而我们要让 canary 在后台持续跑。
+  extraPortMappings:
+  - {containerPort: 30090, hostPort: 30090, protocol: TCP}   # Prometheus
+  - {containerPort: 30030, hostPort: 30030, protocol: TCP}   # Grafana
+  - {containerPort: 30080, hostPort: 30080, protocol: TCP}   # sre-agent

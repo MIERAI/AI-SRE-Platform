@@ -1,0 +1,180 @@
+{
+  "title": "AI-SRE Agent · 防御可观测",
+  "uid": "ai-sre-guard",
+  "tags": ["ai-sre", "prompt-injection"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {"from": "now-3h", "to": "now"},
+  "panels": [
+    {
+      "type": "text",
+      "title": "读这个面板之前",
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "mode": "markdown",
+        "content": "**传统指标在这里几乎没有信息量。** Phase 5 实测：一个已经完全失效的净化器，它的 QPS / 延迟 / 错误率全都是绿的（P-机器格式破坏 载荷下净化剥离了 6 行，危害 H2 仍是 2/2）。\n\n**唯一回答「防御还有效吗」的是第一行的 canary。** 其余面板都只在与 canary 交叉时才有意义。"
+      }
+    },
+
+    {
+      "type": "timeseries",
+      "title": "★ canary 检出率（按载荷家族）",
+      "description": "生产中唯一的 ground truth。必须【分家族】看：盲点会转移——Phase 5 里补了「人写的无害文本」后，盲点转到了「机器格式的有害文本」。只看总检出率的话，某一族整体失效只会让总数小幅下滑，被其他族的高分掩盖。「机器格式」是已知弱点（判别器仅 1/4），它是判别器改进的直接标尺。",
+      "gridPos": {"h": 9, "w": 16, "x": 0, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prom"},
+      "targets": [
+        {"expr": "sre_guard_canary_detection_rate", "legendFormat": "{{family}}", "refId": "A"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0, "max": 1,
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "spanNulls": true},
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "green", "value": 0.95}
+          ]}
+        }
+      },
+      "options": {"legend": {"displayMode": "table", "placement": "right",
+                             "calcs": ["lastNotNull", "min"]}}
+    },
+
+    {
+      "type": "stat",
+      "title": "★ 误报率（干净诱饵被误删）",
+      "description": "必须与检出率【成对】看。只看检出率的话，「把一切都判为注入」能拿满分——Phase 5 的 v1 模型正是如此（F6a 100% 而 F6b 仅 34.4%），而它会把正常的 runbook 引用、安全提示、排查建议全删掉，直接损害排查质量。",
+      "gridPos": {"h": 5, "w": 8, "x": 16, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prom"},
+      "targets": [
+        {"expr": "sre_guard_canary_false_positive_rate", "legendFormat": "误报率", "refId": "A"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "orange", "value": 0.2},
+            {"color": "red", "value": 0.4}
+          ]}
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "area",
+                  "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+
+    {
+      "type": "stat",
+      "title": "探测样本量",
+      "description": "样本量太小时比率毫无意义。实测：服务冷启动后只跑过 1 轮时，误报率显示 100%，而稳定后是 20%。告警规则里因此加了 >= 10 的最小样本量条件。",
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 9},
+      "datasource": {"type": "prometheus", "uid": "prom"},
+      "targets": [
+        {"expr": "sum(sre_guard_canary_checks_total)", "legendFormat": "总探测数", "refId": "A"}
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [
+          {"color": "red", "value": null}, {"color": "orange", "value": 10}, {"color": "green", "value": 50}
+        ]}}
+      },
+      "options": {"colorMode": "value", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+
+    {
+      "type": "timeseries",
+      "title": "净化行为（⚠️ 不可单独解读）",
+      "description": "「剥离了 N 行」不是防御生效的证据——Phase 5 实测：剥离 6 行而危害 H2 完全未降。这个面板只在与上方 canary 检出率【交叉】时有意义：剥离量大 + 检出率跌 = 正在乱删。fallback（整段丢弃）单独有意义：它直接反映排查质量的损失。",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prom"},
+      "targets": [
+        {"expr": "rate(sre_guard_lines_removed_total[10m])*600", "legendFormat": "剥离行数/10min", "refId": "A"},
+        {"expr": "rate(sre_guard_fallback_dropped_total[10m])*600", "legendFormat": "整段丢弃/10min ⚠", "refId": "B"},
+        {"expr": "rate(sre_guard_scans_total[10m])*600", "legendFormat": "扫描次数/10min", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short",
+        "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 8}}}
+    },
+
+    {
+      "type": "timeseries",
+      "title": "判别器延迟（净化开销）",
+      "description": "Phase 5 实测：净化开销约占单次排查耗时的 2%。判别器候选：微调 4B（约 529ms / 2.5GB）或未微调 14B（约 1033ms / 9.3GB），两者在对抗集上处于同一水平。",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prom"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by(le,backend)(rate(sre_guard_duration_seconds_bucket[10m])))", "legendFormat": "p95 {{backend}}", "refId": "A"},
+        {"expr": "histogram_quantile(0.50, sum by(le,backend)(rate(sre_guard_duration_seconds_bucket[10m])))", "legendFormat": "p50 {{backend}}", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s",
+        "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 5}}}
+    },
+
+    {
+      "type": "timeseries",
+      "title": "TTFT — prefill 侧（compute-bound）",
+      "description": "必须与 TPOT 分开看。Phase 0 实测：prefill 是 compute-bound、decode 是 memory-bandwidth-bound，两者对 batch size 的反应相反。合成一个「平均延迟」会让「prompt 变长」和「显存带宽被抢」看起来一模一样，而处置手段完全不同。TTFT 升高的常见诱因是 RAG 检索结果膨胀。",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 21},
+      "datasource": {"type": "prometheus", "uid": "prom"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by(le,model)(rate(sre_agent_llm_ttft_seconds_bucket[10m])))", "legendFormat": "p95 {{model}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "lineWidth": 2}}}
+    },
+
+    {
+      "type": "timeseries",
+      "title": "TPOT — decode 侧（memory-bandwidth-bound）",
+      "description": "这条升高通常意味着有别的模型/进程在抢显存带宽。在 24GiB 单机上，judge(2.5G) 与主模型(9.3G) 共存时尤其要留意——一旦发生 swap，TPOT 会直接崩。",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 21},
+      "datasource": {"type": "prometheus", "uid": "prom"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by(le,model)(rate(sre_agent_llm_tpot_seconds_bucket[10m])))", "legendFormat": "p95 {{model}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "lineWidth": 2}}}
+    },
+
+    {
+      "type": "timeseries",
+      "title": "模型常驻内存（24 GiB 硬上限）",
+      "description": "这台机器上内存排布比性能调优更是实际瓶颈：实测总内存 24.0 GiB，且在加载 14B 时已 swap 5.8 GiB。decode 是带宽受限的，一旦换页 TPOT 会崩——所以这是硬约束，不是好奇心。",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 21},
+      "datasource": {"type": "prometheus", "uid": "prom"},
+      "targets": [
+        {"expr": "sum(sre_agent_llm_resident_bytes)", "legendFormat": "模型常驻合计", "refId": "A"}
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "bytes", "max": 25769803776,
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 15},
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null}, {"color": "orange", "value": 16000000000},
+            {"color": "red", "value": 20000000000}]}}
+      }
+    },
+
+    {
+      "type": "timeseries",
+      "title": "下游机械检测器触发（纵深防御的最后一道）",
+      "description": "这些判据锚在应用【伪造不了】的控制面字段上（READY/STATUS/RESTARTS/Exit Code/Node），是 Phase 4 找到的唯一站得住的地基。它们触发 = 注入穿透了输入净化但系统还没沦陷。触发样本应当加入 canary 池——它代表一类当前防不住的形式。",
+      "gridPos": {"h": 7, "w": 12, "x": 0, "y": 29},
+      "datasource": {"type": "prometheus", "uid": "prom"},
+      "targets": [
+        {"expr": "rate(sre_agent_harm_detector_fired_total[30m])*1800", "legendFormat": "{{detector}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short",
+        "custom": {"drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60}}}
+    },
+
+    {
+      "type": "timeseries",
+      "title": "排查吞吐与耗时",
+      "description": "传统指标。放在最后是因为它们【不能】回答「防御还有效吗」——服务活着不等于防御活着。",
+      "gridPos": {"h": 7, "w": 12, "x": 12, "y": 29},
+      "datasource": {"type": "prometheus", "uid": "prom"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by(le,alert)(rate(sre_agent_investigation_duration_seconds_bucket[30m])))", "legendFormat": "p95 耗时 {{alert}}", "refId": "A"},
+        {"expr": "sum(rate(sre_agent_investigations_total[30m]))*1800", "legendFormat": "排查数/30min", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2}}}
+    }
+  ]
+}

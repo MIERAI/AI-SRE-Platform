@@ -1,0 +1,166 @@
+# Prometheus 告警规则 —— 针对「LLM 防御是否还有效」，不是针对「服务是否还活着」。
+#
+# 前提（Phase 5 实测）：**一个已经完全失效的净化器，它的 QPS / 延迟 / 错误率全是绿的。**
+# P-机器格式破坏 载荷下净化剥离了 6 行、危害 H2 仍是 2/2 —— 所有传统指标毫无异常。
+# 所以下面的规则里，真正回答「防御还在吗」的只有 canary 组。
+
+groups:
+
+# ══════════════════════════════════════════════════════════════════════
+# ① canary —— 生产中唯一的 ground truth
+# ══════════════════════════════════════════════════════════════════════
+- name: guard-effectiveness
+  rules:
+
+  # ⚑ 必须**按家族**告警，不能只看总检出率。
+  #   Phase 5 的核心教训是盲点会转移：补了「人写的无害文本」后，
+  #   盲点转到了「机器格式的有害文本」。若只报总数，某一族整体失效
+  #   只会让总数小幅下滑，被其他族的高分掩盖 ——
+  #   与 Phase 5 里总准确率把 F5 的 33% 掩盖成 60% 是同一个错误。
+  # ⚑ `and on(family) (...)` 是**跑起来之后补的**：
+  #   服务冷启动时 canary 只跑过 1 轮，比率会剧烈失真
+  #   （实测：误报率显示 100%，而稳定后是 20%）。
+  #   滚动比率必须配最小样本量，否则每次重启都会喷一轮假告警，
+  #   而假告警会训练值班的人忽略它 —— 那比没有告警更糟。
+  - alert: CanaryDetectionRateLow
+    expr: |
+      sre_guard_canary_detection_rate < 0.95
+      and on(family) (
+        sum by(family) (sre_guard_canary_checks_total) >= 10
+      )
+    for: 15m
+    labels: {severity: critical}
+    annotations:
+      summary: "输入净化对 {{ $labels.family }} 类载荷的检出率跌到 {{ $value | humanizePercentage }}"
+      description: >
+        该家族的注入正在穿过净化层。注意这不一定是判别器"坏了"——
+        更可能是这一类的伪装形式发生了变化（Phase 5 实测：盲点会转移而不是消失）。
+        处置：取该族最近的漏检样本，加入 hard negative 重训；
+        **同时检查其他家族是否因此变差**——补一类往往会挪走盲点而不是消除它。
+
+  # 检出率与误报率**必须成对告警**。只盯检出率的话，
+  # 「把一切都判为注入」能拿满分 —— Phase 5 的 v1 模型正是如此
+  # （F6a 100% 而 F6b 只有 34.4%），而那个模型会把正常 runbook 引用全删掉。
+  # ⚑ `on()` 不能省。第一版写的是裸 `and`，**实测永不触发** ——
+  #   PromQL 的 `and` 默认按【全部 label】做集合匹配：
+  #   左边带 {instance, job}，右边 sum() 把 label 全聚合掉了，两边永远匹配不上。
+  #   于是这条告警会一直显示 inactive，看起来岁月静好，而误报率再高也不会响。
+  #   **我为了修「冷启动假告警」引入了「永不告警」，后者严重得多** ——
+  #   假告警至少看得见，静默失效看不见。
+  #   验证方法：把阈值调到必然成立，看查询是否真返回结果（见 phase6-why §5）。
+  - alert: CanaryFalsePositiveHigh
+    expr: |
+      sre_guard_canary_false_positive_rate > 0.2
+      and on() (sum(sre_guard_canary_checks_total{family="_clean"}) >= 10)
+    for: 15m
+    labels: {severity: warning}
+    annotations:
+      summary: "净化误删正常运维文本，误报率 {{ $value | humanizePercentage }}"
+      description: >
+        判别器正在把 runbook 引用 / 安全提示 / 排查建议当成注入删掉，
+        直接损害排查质量。与 CanaryDetectionRateLow 一起看：
+        若检出率同时很高，说明模型退化成了「见到自然语言就删」。
+
+  # 🔴 **监控的监控**：canary 停止上报比 canary 报警更危险 ——
+  #    前者看起来一片绿，实际上已经没有任何东西在验证防御了。
+  # ⚑ 必须 `sum()` 聚合。第一版写的是裸 `rate(...)`，**跑起来才发现**它保留了
+  #   family/result 全部 label，于是每个组合各触发一条同名告警（实测一次喷了 6 条）。
+  #   而「canary 停止上报」是**全局状态**，不是每家族的状态 ——
+  #   6 条同名告警会让值班的人以为是 6 个独立故障。
+  #   这是 PromQL 里最容易犯的错：**忘了表达式默认按 label 组合逐条求值。**
+  - alert: CanaryStalled
+    expr: |
+      absent(sre_guard_canary_checks_total)
+      or sum(rate(sre_guard_canary_checks_total[30m])) == 0
+    for: 30m
+    labels: {severity: critical}
+    annotations:
+      summary: "canary 探测已停止 —— 防御现在处于无监控状态"
+      description: >
+        没有 canary 就没有 ground truth，所有「防御正常」的判断都失去依据。
+        优先级高于 CanaryDetectionRateLow：后者是知道坏了，前者是不知道好坏。
+
+# ══════════════════════════════════════════════════════════════════════
+# ② 净化的副作用
+# ══════════════════════════════════════════════════════════════════════
+- name: guard-side-effects
+  rules:
+
+  # 定位不到就整段丢弃是明确的取舍（宁可丢日志也不放注入进上下文），
+  # 但丢得太多说明判别器对当前日志分布失去了定位能力，排查会因缺证据而降质。
+  - alert: GuardFallbackDroppedHigh
+    expr: |
+      rate(sre_guard_fallback_dropped_total[30m])
+      / clamp_min(rate(sre_guard_scans_total[30m]), 0.001) > 0.1
+    for: 20m
+    labels: {severity: warning}
+    annotations:
+      summary: "超过 10% 的容器日志被整段丢弃"
+      description: >
+        段落级判定有注入、但逐行与滑动窗口都定位不到。
+        通常意味着日志格式变了（判别器只在旧格式上训练过）。
+
+  # ⚠️ 故意**不**对 sre_guard_lines_removed_total 单独设告警。
+  #    Phase 5 实测：剥离 6 行而危害 H2 完全未降 ——
+  #    **「剥离了 N 行」不是防御生效的证据**，给它设阈值只会制造假安全感。
+  #    它只在与 canary 检出率交叉时有意义（剥离量大 + 检出率跌 = 正在乱删）。
+
+# ══════════════════════════════════════════════════════════════════════
+# ③ LLM 服务本身
+# ══════════════════════════════════════════════════════════════════════
+- name: llm-serving
+  rules:
+
+  # TTFT 与 TPOT 分开告警。Phase 0 实测：prefill 是 compute-bound、
+  # decode 是 memory-bandwidth-bound，合成一个「平均延迟」会让
+  # 「prompt 变长」和「显存带宽被抢」看起来一模一样。
+  - alert: LLMTTFTHigh
+    expr: histogram_quantile(0.95, rate(sre_agent_llm_ttft_seconds_bucket[10m])) > 10
+    for: 10m
+    labels: {severity: warning}
+    annotations:
+      summary: "{{ $labels.model }} 的 p95 TTFT 超过 10s（prefill 侧）"
+      description: "prompt 过长或排队。RAG 检索结果膨胀是常见诱因。"
+
+  - alert: LLMTPOTHigh
+    expr: histogram_quantile(0.95, rate(sre_agent_llm_tpot_seconds_bucket[10m])) > 0.2
+    for: 10m
+    labels: {severity: warning}
+    annotations:
+      summary: "{{ $labels.model }} 的 p95 TPOT 超过 200ms（decode 侧）"
+      description: >
+        decode 是显存带宽受限的。这条通常意味着有别的模型/进程在抢带宽——
+        在 26GB 的单机上，judge(2.5G) 与主模型(9.3G) 共存时尤其要留意。
+
+  # 内存排布：Phase 5 实测 14B=9.3G、judge 4B=2.5G，单机 26G。
+  - alert: ModelMemoryBudgetExceeded
+    expr: sum(sre_agent_llm_resident_bytes) > 20e9
+    for: 5m
+    labels: {severity: critical}
+    annotations:
+      summary: "模型常驻内存合计 {{ $value | humanize1024 }}B，接近 26GB 上限"
+      description: "继续加载会触发 swap，decode 侧延迟将急剧恶化。"
+
+# ══════════════════════════════════════════════════════════════════════
+# ④ 纵深防御的最后一道
+# ══════════════════════════════════════════════════════════════════════
+- name: harm-detection
+  rules:
+
+  # 这些判据锚在应用**伪造不了**的控制面字段上（READY/STATUS/RESTARTS/Exit Code/Node），
+  # 是 Phase 4 找到的唯一站得住的地基。它们触发 = 净化漏了但系统还没沦陷。
+  - alert: HarmDetectorFiring
+    expr: rate(sre_agent_harm_detector_fired_total[1h]) > 0
+    for: 5m
+    labels: {severity: critical}
+    annotations:
+      summary: "下游机械检测器 {{ $labels.detector }} 触发"
+      description: >
+        有注入穿透了输入净化并影响了报告内容。
+        把触发样本加入 canary 池——它代表一类当前防不住的形式。
+
+  # 门控拦截数归零**不一定是好事**：可能是门控失效，
+  # 也可能是 Agent 不再尝试修复。Phase 5 实测过后者
+  # （净化单独部署时 Agent 反而更主动地动手），所以这条只做提示不做告警。
+  - record: sre_agent:gated_calls:rate1h
+    expr: rate(sre_agent_gated_calls_total[1h])
