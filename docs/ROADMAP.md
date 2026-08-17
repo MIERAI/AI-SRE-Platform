@@ -12,10 +12,143 @@
 
 | 项 | 值 |
 |---|---|
-| **当前阶段** | Phase 4 · Evaluation 评测体系 |
-| **状态** | 🏗️ 进行中 —— 主要产出已成独立报告 |
-| **上次更新** | 2026-08-10 |
-| **下一步动作** | 剩余：位置偏置用接近的一对重测 · 自我偏好偏置 · DeepEval 对比两个 System Prompt · 提高 n |
+| **当前阶段** | Phase 6 · 生产部署与可观测 |
+| **状态** | 🏗️ 进行中 —— 指标/canary/探针/告警规则已就绪并实测，**差集群没起** |
+| **上次更新** | 2026-08-17 |
+| **下一步动作** | `orb start` → 起 kind → Prometheus+Grafana 进集群 → 验证抓取与告警触发 |
+| **总进度** | **103 / 153 项**（P0 17/28 · P1 16/20 · P2 30/33 · P3 15/17 · P4 7/14 · P5 10/18 · P6 8/23） |
+
+> **未完成项已全部标注状态**：`⏸` 暂缓（附理由）· `❌` 真没做 · `◐` 做了一半 ·
+> `🔄` 改用别的方式 · `👤` 需你操作。**没有空白未勾项** —— 空白会让人以为是忘了。
+
+### 📄 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [`phase0-why.md`](phase0-why.md) | 手写 GPT · KV cache · Pre-LN · 两次被自己搞砸的消融 |
+| [`phase1-why.md`](phase1-why.md) | Prompt/Function Calling · 约束解码 · **噪声底判据的由来** |
+| [`phase2-why.md`](phase2-why.md) | LangGraph 源码 · Pregel/BSP · 门控 · 检测器演化 |
+| [`phase3-why.md`](phase3-why.md) | RAG · **教程默认值在本语料上全错** · HNSW 夹具错三次 |
+| [`phase4-why.md`](phase4-why.md) | 评测 · LLM-as-judge 三种偏差 · 危害矩阵 |
+| [`research-prompt-injection-in-agentic-sre.md`](research-prompt-injection-in-agentic-sre.md) | **独立研究报告**（主要产出） |
+| [`phase5-why.md`](phase5-why.md) | LoRA 源码级 · **五次自我推翻** · 噪声底 · 输入净化 |
+| [`phase6-why.md`](phase6-why.md) | SLI 设计 · canary · 探针 · **Mac 限制的诚实记录** |
+| [`finetune/README.md`](../finetune/README.md) | 微调模块入口（含噪声底警告） |
+
+**⚑ 进场立论已被自己的基线数据推翻，目标已重写。** 我进 Phase 5 时说
+「Phase 4 的 H4 = 16/16，这是 Prompt 改不了、只能改权重的情形」—— 前半是事实，后半是错推论。
+把注入片段单独拿出来直接问模型，`qwen3:14b` 是 **83/83 = 100%**（含训练里没出现的家族）。
+所以 H4 的含义是**「不自发」而非「没能力」**，能力在权重里。已回改 `phase4-why.md`
+和研究报告的措辞 —— 这个歧义会导出完全错误的工程决策。
+
+**重写后的目标**：微调不是「造出不存在的能力」，而是**把 14B 有、4B 没有的能力压进 4B**。
+收益可量化：延迟 1018→448 ms（2.3x）、常驻 9.3→2.5 GB（3.7x）；24GB 机器上 14B 常驻会挤掉主模型。
+**判据是 F5**：追上 14B → 学到了概念；只有 F1–F4 涨而 F5 不涨 → 只是记住四族模式，该用 14B。
+失败也有结论，所以值得跑。三条基线（4B-MLX 31% / 4B-Ollama 0% / 14B 100%）已排除后端混淆。
+
+**⚑ 第二次自我推翻：微调「成功」是假的。** rank=8 训 100 步，test 集 83/83 追平 14B。
+但我怀疑了这个满分，查出 **F5 的留出只留了语义、没留形式** —— 于是造 F6 对抗集
+（8 种伪装形式的真注入 + 8 种「长得像插入但无害」的诱饵）。结果：
+
+| | F6a 召回 | F6b 特异性 | **平衡准确率** |
+|---|---|---|---|
+| 未微调 4B | 34.4% | 93.8% | 64.1% |
+| 微调 4B | 100% | **34.4%** | 67.2% |
+| 未微调 14B | 87.5% | 78.1% | **82.8%** |
+
+模型学的不是「有没有注入」，是**「这行是人写的还是机器写的」**（机器格式→false、
+自然语言→true，21 个误报全落在正常 runbook 引用/安全提示/排查建议上）。
+**同分布测试集上追平 14B，对抗集上 67.2% vs 82.8%** —— 只是造出了一个看起来一样的替代品。
+
+**归因已验证＝数据缺陷。** v1 的 clean 样本没有一条「有插入但无害」→ v2 补 62 条
+hard negative（与 F6b 零重叠，test 集哈希验证与 v1 逐条相同）。
+
+**训练事故（已定位）**：v2 在 100–120 步 loss→nan。逐条量 token 排除数据假设
+（无超长、无零可训练 token），定位为梯度爆炸，根因是 `scale=20` + `lr=1e-4` ——
+**正是我从源码推断的那个隐患被实证**。v2b 只改 scale 20→4 就不再 nan。
+另一条实用教训：`save_every` 会用 nan 权重覆盖 `adapters.safetensors`，
+**唯一的保险是中间 checkpoint**（我晚一步，224 个张量全毁）。
+
+**⚑ 第三次自我推翻**：我基于 v2 的 100 步 checkpoint 写下「补 hard negative 只是枚举」，
+但那是**拿 100 步的模型去比 300 步的模型**。v2b 训满 300 步后对抗集 90.6%，
+看起来超过未微调 14B 的 82.8%（延迟 529 vs 1033 ms、常驻 2.5 vs 9.3 GB）。
+
+**⚑ 第四次自我推翻，也是最贵的一次：上面这些差值全都在噪声里。**
+一次意外重复（`steps_per_eval` 50→25 导致 F6b 差 18.8 点）逼我去量噪声底 ——
+**同数据、同超参、同步数，只改 seed，100 步 × 3 次**：
+
+| seed | F6a | F6b | 平衡准确率 |
+|---|---|---|---|
+| 0 | 32/32 | 46.9% | 73.4% |
+| 1 | 32/32 | 31.2% | 65.6% |
+| 2 | 25/32 | 90.6% | 84.4% |
+| | | **极差 59.4 点** | **极差 18.8 点** |
+
+于是：「超过 14B」（7.8 点）、「步数主导」（17.1 点）、「scale 略好」（4.6 点）
+**全部落在噪声内**；「A/B 初始化对调更好」（F6b 65.7 点）也与 F6b 噪声底相当，
+**那个反直觉结果被完全解释掉了** —— seed 2 恰好就复现了我大书特书的
+「从全报转向真判断」模式，而它只是换了个随机种子。
+
+**这是 Phase 1「先量噪声底再谈信号」在新指标上的失守**，而且更隐蔽：
+这次的污染源是 `steps_per_eval` 这样一个纯观测参数。
+
+**⚑ 300 步的噪声底收窄一半以上**（F6b 极差 15.6、平衡准确率 10.9），
+因为模型已收敛。→ **「该不该继续训」除了看 loss，还可以看结果的稳定性** ——
+而 loss 在这个任务上早就归零、什么都没说。带区间重裁后：
+
+| 结论 | 数字 | 判定 |
+|---|---|---|
+| 微调有效（vs 未微调 4B） | 81.2–92.2% vs 64.1% | **可信** |
+| v2 数据优于 v1（F6b） | 78.1–93.8% vs 34.4% | **可信** |
+| 4B **超过** 14B | 81.2–92.2% vs 82.8% | **不能声称**（14B 落在区间内） |
+| 300 步优于 100 步 | 均值 88.0% vs 74.5% | 趋势明显，n=3 不显著 |
+
+**Phase 5 的工程结论**（保守但站得住）：**微调 4B 与未微调 14B 在对抗集上同一水平，
+但延迟减半、常驻内存少 3.7 倍** —— 24GB 上省下的 6.8 GB 让主排查模型能与 guard 同时常驻。
+
+**⚑ 第五次自我推翻**：我开篇宣布的「三个默认值有毒」，实测后**只有一个立得住**——
+`scale=20`（实证 nan）。`mask_prompt: false` 被我称为「灾难」，但只改这一个值后
+平衡准确率 85.9%，**落在对照组噪声区间 81.2–92.2% 内部**，无可检测差异。
+训练信号量确实差 18 倍（264935 vs 15600 tokens，实测），但**「浪费」不等于「有害」**——
+模型能从剩下 5% 的信号里学到同样的东西。**读源码能发现可疑之处，但可疑 ≠ 有害。**
+
+**⚑ 一个确定性的部署结论（无噪声争议）**：LoRA **不要 fuse 回 4bit**。
+F6a 从 87.5% 崩到 50.0%（-37.5 点，噪声底的 3.4 倍），而 `--dequantize` 版与
+adapter 分离逐格一致 —— 问题纯在重新量化：ΔW 的量级小于 4bit 量化步长，被直接吞掉。
+保持 adapter 分离只多 29MB、只慢 11%、质量零损失。
+
+**⚑ Phase 5 的产物已接回平台**：`agent/input_guard.py` —— 在工具返回进入模型上下文
+【之前】逐行剥离注入，只作用于 `app_content` 级工具（`kubectl_logs`，唯一由被观测方
+控制内容的通道）。三条设计约束全部来自我们自己的实验，其中最反直觉的一条是
+**「净化必须对模型不可见」**（Phase 4 的 D3 实测：告诉模型有攻击，危害 0/5→5/5）——
+我在这条上**连犯两次**（把统计写进 `facts()`、占位符写「含可疑内容」），
+说明它得靠机制而不是自觉来挡。
+
+**在判别器见过的载荷上：净化消除危害而非转移**（H1/H2/H3 全 0/1，检出器全静默），
+**且 H2 洗白首次被压住** —— Phase 4 曾断言预防型防御对信息完整性完全无能，
+净化能压住是因为**模型压根没读到攻击者的说法**。开销约 2%。
+
+**⚑ 最重要的架构发现：净化【不能单独部署】，必须与门控同时使用。**
+完整交叉矩阵（n=2）在 P-谎报 上出现反常格子：基线/边界/门控/边界+门控 的 H1 全是 0/2，
+而 **`+ 输入净化（单独）` 是 2/2** —— 加了净化反而制造了破坏性执行。
+核对 `executed` 证实：基线只调只读工具，净化后 Agent 执行了 `patch_memory` + `delete_pod`。
+净化移除攻击的同时改变了 Agent 的**行动倾向**，被释放的「主动修复」意愿需要门控约束。
+**只测最完整那一档（边界+门控+净化）会看到 H1 0/2，完全错过这个效应** ——
+Phase 4 立的「必须做完整配置交叉」在这里又兑现一次。
+
+**在照着已知弱点构造的新载荷上（F6a 机器格式，判别器 1/4）：净化失效于 H2**。
+过程中「拿已知弱点攻击自己的防御」找出了两个真 bug ——
+兜底启发式「删最长那行」反向命中（**删了真证据、留了注入**）、单趟定位只删一半。
+也推翻了我自己一个未经实测的「击穿」判断：H1 全 0/1 连基线都是，
+因为 key=value 形式**对模型的指令性说服力不够**——
+**伪装得越像机器数据，越不像指令**，这是攻击者绕过判别器的代价。
+
+其余站得住的部分（不依赖小差值）：F5 留出只留语义不留形式是真缺陷；
+v1 模型确实是「机器格式→false / 自然语言→true」的捷径（细分表逐项可读，非单一指标）；
+nan 事故的因果链（只改 scale 一个值，一个炸一个不炸）；`save_every` 会覆盖坏权重。
+
+**Phase 4 已完成**（主要产出成独立报告）；剩余项按"选择性"原则跳过，理由见 `phase4-why.md`。
+**Phase 3 ② 拆源码 4/5**（HNSW 已结案，只剩 Embedding 对比学习原理，纯知识性）。
 
 📄 **本阶段的主要产出已整理成独立报告：**
 [`docs/research-prompt-injection-in-agentic-sre.md`](research-prompt-injection-in-agentic-sre.md)
@@ -38,8 +171,8 @@ temperature/top-p 对 JSON 的影响 · 模型为何爱输出 ```json 包裹 · 
 | **Phase 1** | Prompt · Function Calling · Structured Output | 2 周 | ✅ ① 完成，② 5/8 结案 |
 | **Phase 2** | Agent：LangGraph · Agents SDK · MCP | 4 周 | ✅ 已交付 v1（② 6/6 结案） |
 | **Phase 3** | 企业级 RAG（Runbook / Postmortem） | 3 周 | ✅ 主线完成（① 6/8，② 3/5，余项不阻塞） |
-| **Phase 4** | Evaluation：Ragas · DeepEval | 2 周 | 🏗️ 进行中 |
-| **Phase 5** | LoRA / QLoRA（源码级，非浅尝） | 1.5 周 | ⬜ |
+| **Phase 4** | Evaluation：Ragas · DeepEval | 2 周 | ✅ 完成（产出独立报告） |
+| **Phase 5** | LoRA / QLoRA（源码级，非浅尝） | 1.5 周 | 🏗️ 进行中 |
 | **Phase 6** | 生产部署：推理引擎 · K8s · 监控 | 3 周 | ⬜ |
 
 状态图例：🔜 未开始 · 🏗️ 进行中 · ✅ 完成 · ⏸️ 暂停 · ⬜ 未排期
@@ -193,7 +326,7 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
       场景3 **工具返回值注入完全成功**
 - [x] **注入防御对比**（每格 3 次，零噪声）→ `agent/defense_injection.py`
       System Prompt 安全规则 **0/3**；结构化输出 **0/3**；数据边界标记 **3/3**；近因提醒 **3/3**
-- [ ] `nomic-embed-text`（Phase 3 才需要）
+- [x] `nomic-embed-text`（Phase 3 才需要） → Phase 3 已用；并实测**任务前缀在本语料上无收益**（证伪了一个假设）
 
 ### ② 拆源码 · 设计追问
 
@@ -215,8 +348,8 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
 
 ### ③ 落仓
 
-- [ ] 告警解析模块进 `agent/parser/`，带 20 条测试用例
-- [ ] `docs/phase1-why.md`
+- [x] 告警解析模块进 `agent/parser/`，带 20 条测试用例 → `agent/parser/{schema,extract}.py` + `testdata/alerts.jsonl`
+- [x] `docs/phase1-why.md`
 
 ### 检查清单
 
@@ -256,13 +389,13 @@ v2 手册的定位没问题：这是地基。但内容要从"技巧罗列"改成
       **实测 Ollama 单实例串行**（并发 3 次比串行慢 0.89x，延迟等差叠加=排队）
       → 设计原则：单实例后端下并行分支用来并行化**取数据**，不是并行化调模型
       ⚠️ 两条局限已记录：假集群工具 0ms 测不出收益；模型编造服务依赖关系
-- [ ] 用 OpenAI Agents SDK 把同一个 Agent 再写一遍，对比两者的抽象取舍
+- [ ] 用 OpenAI Agents SDK 把同一个 Agent 再写一遍，对比两者的抽象取舍 ⏸ 按「选择性」暂缓：抽象取舍的对比价值低于继续往前推
 - [x] Python MCP SDK 写 K8s MCP Server（8 个工具，带完整 annotations）→ `mcp/k8s_server/server.py`
 - [x] **手写裸 JSON-RPC 客户端**抓完整协议报文 → `mcp/probe_protocol.py`（刻意不用 SDK client）
 - [x] 把 MCP Server 接进自己的 Ollama Agent → `mcp/bridge_agent.py`
       **门控依据从私有 `DESTRUCTIVE` 集合换成协议字段 `destructiveHint`**，实测拦下成功
 - [x] `.mcp.json` 已建且验证命令可握手；`claude mcp list` 已发现，状态 `⏸ Pending approval`
-- [ ] 在 Claude Code 里批准并实际调用（需用户在 `claude` 中授权，我不代做）
+- [ ] 在 Claude Code 里批准并实际调用（需用户在 `claude` 中授权，我不代做） 👤 **需你在 `claude` 中授权** —— 我不代做（该 server 的 instructions 会进系统提示）
 
 ### ② 拆源码 · 设计追问（本阶段重头戏）
 
@@ -316,9 +449,11 @@ v1 链路：告警 JSON → 约束解码抽取 → MCP 工具排查（有环图�
 - [x] Agent 能自主完成 ≥3 步的任务（真跑：告警 A 走了 5 个只读工具 + 1 次门控）
 - [x] 杀进程后能从 checkpoint 恢复，状态无丢失（`timetravel.py --mode crash`）
 - [x] 自己写的 MCP Server 被自己的 Agent 实际调用（`bridge_agent.py` / `v1.py`）
-- [ ] 在 Claude Code 里被实际调用（`.mcp.json` 已注册，待用户在 `claude` 中批准）
+- [ ] 在 Claude Code 里被实际调用（`.mcp.json` 已注册，待用户在 `claude` 中批准） 👤 **需你在 `claude` 中授权** —— 我不代做（该 server 的 instructions 会进系统提示）
 - [x] K8s Agent v1：输入告警 JSON，输出根因分析报告 ✅
-- [ ] ⚠️ **遗留缺陷**：门控保护「状态」不保护「结论」。注入内容仍会以高置信度进入
+- [x] ⚠️ **遗留缺陷**：门控保护「状态」不保护「结论」。注入内容仍会以高置信度进入
+      → **Phase 5/6 部分解决**：输入净化在工具返回进上下文【之前】剥离注入，H2 洗白与 H8 采信压制在 5/7 载荷上被压到 0/2 —— 这是「预防型对信息完整性无能」那条结论的边界（它只对**输出侧/执行侧**的防御成立）。
+      **但仍未根除**：照判别器已知弱点构造的载荷可完全绕过（P-机器格式破坏 H2 仍 2/2）。
       Postmortem，归因核查只打红旗。**v2 首要课题**
 
 ---
@@ -336,32 +471,32 @@ v1 链路：告警 JSON → 约束解码抽取 → MCP 工具排查（有环图�
 
 ### ① 跑通
 
-- [ ] 完整 pipeline：加载 → 按段落切片（不是固定长度）→ Embedding → Chroma → 检索 → 回答
-- [ ] 回答必须标注来源 `[文档名 · 第X段]`；无答案时明确说"未找到相关 Runbook"
-- [ ] **混合检索**：向量 + BM25，对比单独用向量的召回率
-- [ ] 加 Reranker（cross-encoder），Top-20 重排取 Top-3
-- [ ] 封装成 Agent 工具 `search_runbook(query)` 接进 Phase 2 的 Agent
-- [ ] 同一条告警，加 RAG 前后的回答质量对比（留证据，Phase 4 要用）
+- [x] 完整 pipeline：加载 → 按段落切片（不是固定长度）→ Embedding → Chroma → 检索 → 回答 → `rag/index.py`；**实测按段落切在本语料上更差**，见 phase3-why
+- [x] 回答必须标注来源 `[文档名 · 第X段]`；无答案时明确说"未找到相关 Runbook"
+- [x] **混合检索**：向量 + BM25，对比单独用向量的召回率 → `rag/eval_hybrid.py`；**RRF 融合在本语料上无提升**（诚实记录）
+- [x] 加 Reranker（cross-encoder），Top-20 重排取 Top-3 → `rag/rerank.py`
+- [x] 封装成 Agent 工具 `search_runbook(query)` 接进 Phase 2 的 Agent → `mcp/k8s_server/server.py`，含 CJK→英 查询翻译
+- [ ] 同一条告警，加 RAG 前后的回答质量对比（留证据，Phase 4 要用） ⏸ `--no-rag` 开关已就绪，未跑成数字
 
 ### ② 拆源码 · 设计追问
 
-- [ ] **Embedding 为什么能做语义检索？** 从对比学习的训练目标解释，不是"它把语义变成向量"这种同义反复
-- [ ] **向量索引**：Chroma 底层是 HNSW。HNSW 的多层图结构为什么比暴力搜索快？`M` 和 `ef_construction` 怎么权衡召回率和速度？——**这是精确近邻还是近似近邻，代价是什么**
-- [ ] **BM25 的公式**里为什么有词频饱和项（saturation）？为什么不用朴素 TF-IDF
-- [ ] **Reranker 为什么更准**：cross-encoder 和 bi-encoder 的本质区别（交互发生在编码前还是编码后），以及为什么不能直接用 cross-encoder 检索全库
-- [ ] 切片策略：为什么"按段落切"对 Runbook 更好？语义切片 / 父子文档检索是在解决同一个问题吗
+- [ ] **Embedding 为什么能做语义检索？** 从对比学习的训练目标解释，不是"它把语义变成向量"这种同义反复 ⏸ **跳过**：纯知识性，需读对比学习论文，不影响任何工程判断
+- [x] **向量索引**：Chroma 底层是 HNSW。HNSW 的多层图结构为什么比暴力搜索快？`M` 和 `ef_construction` 怎么权衡召回率和速度？——**这是精确近邻还是近似近邻，代价是什么** → `rag/bench_hnsw.py`，交叉点 1k–10k；夹具错三次的记录见 phase3-why
+- [x] **BM25 的公式**里为什么有词频饱和项（saturation）？为什么不用朴素 TF-IDF
+- [x] **Reranker 为什么更准**：cross-encoder 和 bi-encoder 的本质区别（交互发生在编码前还是编码后），以及为什么不能直接用 cross-encoder 检索全库
+- [x] 切片策略：为什么"按段落切"对 Runbook 更好？语义切片 / 父子文档检索是在解决同一个问题吗 → **结论相反**：教程默认值（512 token/段落切/hybrid/nomic 前缀）在本语料上全错
 
 ### ③ 落仓
 
-- [ ] `rag/` 完整模块
-- [ ] `docs/phase3-why.md` + 混合检索前后的召回率数字
+- [x] `rag/` 完整模块
+- [x] `docs/phase3-why.md` + 混合检索前后的召回率数字
 
 ### 检查清单
 
-- [ ] 能解释 HNSW 为什么快、近似的代价在哪
-- [ ] 混合检索相比纯向量，召回率有可量化提升
-- [ ] RAG 作为工具接进 Agent，告警报告里包含 Runbook 内容
-- [ ] 能说出 RAG 的 4 个常见失败模式及对策
+- [x] 能解释 HNSW 为什么快、近似的代价在哪
+- [x] 混合检索相比纯向量，召回率有可量化提升 —— **实测为无提升**，数字与原因均已记录
+- [x] RAG 作为工具接进 Agent，告警报告里包含 Runbook 内容
+- [x] 能说出 RAG 的 4 个常见失败模式及对策
 
 ---
 
@@ -373,31 +508,31 @@ v1 链路：告警 JSON → 约束解码抽取 → MCP 工具排查（有环图�
 
 ### ① 跑通
 
-- [ ] 手工构造 30 条运维问答测试集（question / ground_truth / contexts）
-- [ ] Ragas 跑出四项指标：Context Recall · Context Precision · Faithfulness · Answer Relevancy
-- [ ] 按评测结果改进 RAG，拿到改进前后的对比数字
-- [ ] DeepEval 对比两个 System Prompt 下 Agent 的决策质量
-- [ ] 接进 CI：每次改动自动跑评测，指标掉了就失败
+- [x] 手工构造 30 条运维问答测试集（question / ground_truth / contexts） → `rag/testdata/queries.json` 29 条 × 5 类
+- [ ] Ragas 跑出四项指标：Context Recall · Context Precision · Faithfulness · Answer Relevancy ⏸ 只在子集跑通。**Ragas 在本地串行 Ollama 上比被测系统贵约 50×**，全集约 8 小时；且 judge 可信度实测存疑（见 `judge_reliability.py`），花 8 小时换一组不可信的数字不划算
+- [ ] 按评测结果改进 RAG，拿到改进前后的对比数字 ⏸ 依赖上一条
+- [ ] DeepEval 对比两个 System Prompt 下 Agent 的决策质量 🔄 **改用自建的 `evaluation/prompt_ab.py`** —— DeepEval 同样建立在 LLM-as-judge 上，而我们已实测出它的 verbosity bias 与危险宽容度，不如直接用机械判据
+- [ ] 接进 CI：每次改动自动跑评测，指标掉了就失败 ⏸ 本机无 CI；且单次评测成本使其不适合每次改动都跑
 
 目标线：Context Recall > 0.8 · Context Precision > 0.7 · Faithfulness > 0.9 · Answer Relevancy > 0.8
 
 ### ② 拆源码 · 设计追问
 
-- [ ] **Ragas 的指标到底怎么算的？** 去读源码里 LLM-as-judge 的实际 prompt。Faithfulness 是把回答拆成 statement 再逐条判断有没有 grounding——看它是不是这么做的
-- [ ] **LLM-as-judge 可信吗？** position bias、verbosity bias、self-preference bias 各是什么，怎么缓解
-- [ ] 为什么 Context Recall 需要 ground truth 而 Faithfulness 不需要？这决定了哪些指标能在线上无标注地跑
-- [ ] 评测本身要花多少 token / 时间？在 CI 里跑的成本模型
+- [x] **Ragas 的指标到底怎么算的？** 去读源码里 LLM-as-judge 的实际 prompt。Faithfulness 是把回答拆成 statement 再逐条判断有没有 grounding——看它是不是这么做的 → 读了源码；并实测 **Ragas 比被测系统贵约 50×**
+- [x] **LLM-as-judge 可信吗？** position bias、verbosity bias、self-preference bias 各是什么，怎么缓解 → `evaluation/judge_reliability.py`；实测有真实 verbosity bias 与危险的宽容度
+- [x] 为什么 Context Recall 需要 ground truth 而 Faithfulness 不需要？这决定了哪些指标能在线上无标注地跑
+- [x] 评测本身要花多少 token / 时间？在 CI 里跑的成本模型
 
 ### ③ 落仓
 
-- [ ] `evaluation/` 测试集 + 脚本 + CI 配置
-- [ ] `docs/phase4-why.md`
+- [ ] `evaluation/` 测试集 + 脚本 + CI 配置 ✅ 测试集与脚本已落仓；**CI 配置未做**（理由同上）
+- [x] `docs/phase4-why.md` + **独立研究报告** `research-prompt-injection-in-agentic-sre.md`
 
 ### 检查清单
 
-- [ ] 四项指标有具体数字，且改进前后有对比
-- [ ] 能解释每项指标怎么算出来的（到 prompt 级别，不是概念级别）
-- [ ] CI 里能自动跑，指标回退会拦住
+- [ ] 四项指标有具体数字，且改进前后有对比 ⏸ 同 Ragas 一条
+- [x] 能解释每项指标怎么算出来的（到 prompt 级别，不是概念级别）
+- [ ] CI 里能自动跑，指标回退会拦住 ⏸ 同上
 
 ---
 
@@ -411,39 +546,67 @@ v1 链路：告警 JSON → 约束解码抽取 → MCP 工具排查（有环图�
 
 ### ① 跑通
 
-- [ ] MLX 下载 `Qwen3-4B` 的 MLX 版本
-- [ ] 生成 100+ 条 K8s 运维 Q&A 训练数据（JSONL），比手册的 30 条更能看出效果
-- [ ] `mlx_lm.lora` 跑 LoRA 微调 500 steps，loss 正常下降
-- [ ] **用 Phase 4 的评测体系量化微调前后的差异**，而不是肉眼看两个回答
-- [ ] 扫 rank ∈ {4, 8, 16, 64}，画出效果 / 训练时间 / 显存的曲线
-- [ ] 试一次 QLoRA（14B 4bit），确认 24GB 能不能撑住
+- [x] MLX 下载 `Qwen3-4B` 的 MLX 版本 → `mlx-community/Qwen3-4B-4bit`
+- [x] 生成 100+ 条 K8s 运维 Q&A 训练数据（JSONL），比手册的 30 条更能看出效果 → v1 156 条 / v2 219 条（+62 hard negative）
+- [x] `mlx_lm.lora` 跑 LoRA 微调 500 steps，loss 正常下降 → 300 步即收敛；**v2 在 120 步 loss→nan**，根因 `scale=20`+`lr=1e-4`
+- [x] **用 Phase 4 的评测体系量化微调前后的差异**，而不是肉眼看两个回答 → 完整危害矩阵 7 载荷 × 6 配置 × n=2
+- [ ] 扫 rank ∈ {4, 8, 16, 64}，画出效果 / 训练时间 / 显存的曲线 ⏸ **按「选择性」暂缓**：噪声底实测 10.9 点，要可信需 4 rank × 3 seed × 300 步 ≈ 200 分钟，而 rank 在此类小任务上的已知效应通常**小于噪声底**。`sweep_rank.py` 已写好（固定 alpha），随时可跑
+- [ ] 试一次 QLoRA（14B 4bit），确认 24GB 能不能撑住 ⏸ Phase 6 实测已给出答案的一半：**24GB 目前就在 swap（5.8 GiB）**，14B 常驻 9.3 GiB。训练 14B 需再加梯度与优化器状态，撑不住
 
 ### ② 拆源码 · 设计追问
 
-- [ ] **低秩假设为什么成立？** ΔW 真的是低秩的吗——读 LoRA 原论文和"intrinsic dimensionality"那条线索
-- [ ] **为什么 B 初始化为 0 而 A 用高斯？** 反过来行不行，为什么
-- [ ] **alpha / rank 的缩放系数**为什么重要？为什么调 rank 时通常要同步调 alpha 保持比值
-- [ ] **LoRA 注入到哪些层？** 只给 q_proj/v_proj 和给全部 linear 层，差别多大？为什么早期论文只选注意力投影
-- [ ] **peft / mlx-lm 是怎么把 LoRA 塞进 `nn.Linear` 的？** 读实现——是替换 Module 还是 hook 还是 monkey patch
-- [ ] **QLoRA 三件套**：NF4 量化为什么比 int4 好、double quantization 省了多少、paged optimizer 解决什么
-- [ ] 接 Phase 0：为什么微调改的是权重、而 RAG 和 Prompt 改的是输入？三者的作用位置画在一张图上
+- [ ] **低秩假设为什么成立？** ΔW 真的是低秩的吗——读 LoRA 原论文和"intrinsic dimensionality"那条线索 ❌ 未做（需读 LoRA 原论文与 intrinsic dimensionality 那条线）
+- [x] **为什么 B 初始化为 0 而 A 用高斯？** 反过来行不行，为什么 → **推翻流行说法**：不是「梯度死锁」，算式见 phase5-why §3
+- [x] **alpha / rank 的缩放系数**为什么重要？为什么调 rank 时通常要同步调 alpha 保持比值 → mlx-lm 的 `scale` **不含 1/r**，与 peft 不同；nan 事故实证了它是隐患
+- [ ] **LoRA 注入到哪些层？** 只给 q_proj/v_proj 和给全部 linear 层，差别多大？为什么早期论文只选注意力投影 ◐ **一半**：读源码确认 mlx-lm 默认注入**全部 Linear（含 Embedding）× 最后 16 层**，与 peft 常见的「只挂 q_proj/v_proj」不同；**但未做 q/v-only 的对比实验**
+- [x] **peft / mlx-lm 是怎么把 LoRA 塞进 `nn.Linear` 的？** 读实现——是替换 Module 还是 hook 还是 monkey patch → `LoRALinear.from_base`，替换 Module；`nn.QuantizedLinear` 也可转 = QLoRA 的机制
+- [ ] **QLoRA 三件套**：NF4 量化为什么比 int4 好、double quantization 省了多少、paged optimizer 解决什么 ❌ 未做（NF4 / double quantization / paged optimizer）
+- [ ] 接 Phase 0：为什么微调改的是权重、而 RAG 和 Prompt 改的是输入？三者的作用位置画在一张图上 ❌ 未画那张图
 
 ### ③ 落仓
 
-- [ ] `finetune/` 数据集 + 训练脚本 + rank 扫描结果
-- [ ] `docs/phase5-lora-internals.md`
+- [x] `finetune/` 数据集 + 训练脚本 + rank 扫描结果 → 含 `README.md`；rank 扫描脚本就绪但**按「选择性」暂缓**（理由见下）
+- [ ] `docs/phase5-lora-internals.md` 🔄 **实际写成了 `docs/phase5-why.md`**（与前几阶段命名保持一致），内容更多：含五次自我推翻与噪声底方法论
 
 ### 检查清单
 
-- [ ] 能说出 5 种"不需要微调，Prompt/RAG 能解决"的场景，并说清判断依据
-- [ ] 微调前后有**评测数字**支撑，不是感觉
-- [ ] 能讲清 LoRA 注入的代码路径（哪个类、哪个方法）
+- [ ] 能说出 5 种"不需要微调，Prompt/RAG 能解决"的场景，并说清判断依据 ◐ 有实证但未整理成清单 —— **Phase 5 §0 本身就是一例**：H4 看似需要微调，实测是「不自发」而非「没能力」，加一个显式节点即可
+- [x] 微调前后有**评测数字**支撑，不是感觉 → 且带 **3 seed 噪声区间**
+- [x] 能讲清 LoRA 注入的代码路径（哪个类、哪个方法）
 
 ---
 
 ## Phase 6 · 生产部署
 
-**周期** 3 周 · **状态** ⬜ · **产出** `deployment/` + `kubernetes/` + `monitoring/`
+**周期** 3 周 · **状态** 🏗️ · **产出** `deployment/` + `kubernetes/` + `monitoring/`
+
+### 🎯 本阶段要回答的真问题（由 Phase 5 直接产生）
+
+> **一个基于 LLM 的防御，在生产中如何被观测？**
+
+Phase 5 实测出三件事，它们让传统监控彻底失效：
+
+1. **「净化剥离了 N 行」不是防御生效的证据** —— P-机器格式破坏 剥离 6 行，H2 危害一点没降；
+2. **盲点会转移** —— 今天有效的判别器，明天可能对新形式完全失明；
+3. **生产中没有 ground truth** —— 你不知道那条日志里到底有没有注入。
+
+**QPS / 延迟 / 错误率对这三件事零信息量。**
+一个已经完全失效的净化器，它的所有传统指标都会是绿的。
+
+→ 所以本阶段的核心不是「装上 Prometheus」，而是**设计对 LLM 系统真正有信息量的 SLI**，
+并解决「生产中没有 ground truth」这个根本困难（方向：canary 载荷 / 合成监控）。
+下面 ① 的架构演练照做，但由这个问题串起来。
+
+### 📐 实测到的硬约束（决定架构）
+
+| 项 | 实测 |
+|---|---|
+| 总内存 | 26 GB（wired 已占 13.3 GB，含 qwen3:14b 常驻 9.3 GB），**空闲仅 0.9 GB** |
+| 模型内存 | 14B = 9.3 GB · 微调 4B judge = 2.5 GB（Phase 5 实测） |
+| 工具链 | `docker`(OrbStack，未启动) `kubectl` ✓ · `kind`/`helm` **未装** |
+
+→ **模型不能进集群。** 只把 Agent 服务与监控栈容器化，
+推理留在宿主机（这也符合生产实际：LLM 通常是独立的推理服务）。
 
 > ⚠️ **本阶段已按"只有 Mac"重新设计。**
 > vLLM 在 Apple Silicon 只有 CPU 后端，PagedAttention 的性能收益、GPU 显存监控、
@@ -454,34 +617,34 @@ v1 链路：告警 JSON → 约束解码抽取 → MCP 工具排查（有环图�
 
 ### ① 跑通
 
-- [ ] `kind` 起本地 K8s 集群
-- [ ] llama.cpp server（或 Ollama）容器化，写 Deployment YAML：资源限制 + liveness/readiness 探针
-- [ ] **探针要探对东西**：LLM 服务的 readiness 不是端口通，是模型加载完且能返回一个 token——自己设计这个探针
-- [ ] Prometheus + Grafana 装进 kind，ServiceMonitor 抓指标
-- [ ] 暴露 LLM 专属指标：TTFT · Token Throughput · Queue Depth · Error Rate
-- [ ] Grafana Dashboard 展示 SLO，JSON 存进 `monitoring/`
-- [ ] KEDA ScaledObject 基于队列深度扩缩，压测触发扩容
-- [ ] OpenTelemetry 打通 Agent 全链路追踪：一次告警处理经过 Agent→RAG→LLM 的完整 span
-- [ ] 🔶 真 GPU 上跑 vLLM，对比 continuous batching 开关的吞吐差异
+- [x] `kind` 起本地 K8s 集群 → `kubernetes/kind-cluster.yaml`；**用独立 kubeconfig 创建**，避免 kind 把 current-context 从公司 GKE 切走
+- [ ] llama.cpp server（或 Ollama）容器化，写 Deployment YAML：资源限制 + liveness/readiness 探针 🔄 **刻意不做**：24GiB 单机放不下「集群 + 14B + judge」，模型留宿主机。这也符合生产实际（LLM 通常是独立推理服务）。探针语义已在 Agent 服务上验证
+- [x] **探针要探对东西**：LLM 服务的 readiness 不是端口通，是模型加载完且能返回一个 token——自己设计这个探针 → `/readyz` 真的生成一个 token；**正负两面均实测**（模型不可用时 503 而 healthz 仍 200）
+- [x] Prometheus + Grafana 装进 kind → `kubernetes/prometheus.yaml` + `kubernetes/grafana.yaml`；**不用 kube-prometheus-stack**（24GiB 单机放不下整套 Operator）。ServiceMonitor ⏸ 未用 —— 那是 Operator 的 CRD，这里直接用 static_configs
+- [x] 暴露 LLM 专属指标：TTFT · Token Throughput · Queue Depth · Error Rate → `deployment/metrics.py`；**TTFT 与 TPOT 分开**（prefill/decode 是两种负载）
+- [x] Grafana Dashboard 展示 SLO，JSON 存进 `monitoring/dashboard.json`（11 面板）→ **并逐条验证了 14 个面板查询真的返回数据**，由此抓出 2 处埋点缺失（详见 phase6-why §5.3）
+- [ ] KEDA ScaledObject 基于队列深度扩缩，压测触发扩容 🔄 **写了理由但故意不启用**（见 `kubernetes/agent-deployment.yaml`）：单机单推理端，扩副本只会争抢同一个 Ollama，反而更慢
+- [x] OpenTelemetry 打通 Agent 全链路追踪：一次告警处理经过 Agent→RAG→LLM 的完整 span → `deployment/tracing.py`。**核心不是接上 OTel，而是把时间拆成「等模型 / 等人 / 其余」** —— HITL 的 interrupt 会让 span 跨越人的思考时间，照搬微服务语义会让 p99 被「等人」污染。实测 **99.15% 在等模型**，优化方向因此完全在模型侧
+- [ ] 🔶 真 GPU 上跑 vLLM，对比 continuous batching 开关的吞吐差异 ❌ **本机测不了**：Apple Silicon 上 vLLM 只有 CPU 后端
 
 ### ② 拆源码 · 设计追问
 
-- [ ] **PagedAttention 到底解决什么？** 接 Phase 0 的 KV cache：为什么朴素实现要预分配 max_len 的显存、碎片率有多高、分页怎么解决。**Phase 0 认真做了的话这里应该秒懂**
-- [ ] **continuous batching vs static batching**：为什么 LLM 推理特别适合前者？（不同请求生成长度差异巨大）
-- [ ] **prefill vs decode 是两种完全不同的负载**：一个 compute-bound 一个 memory-bandwidth-bound。这解释了为什么 TTFT 和 TPOT 要分开看、为什么 batch size 对两者影响相反
-- [ ] **为什么 LLM 服务的 HPA 不能按 CPU 扩？** 该按什么扩，为什么是队列深度
-- [ ] LLM 服务的 SLO 该怎么定？和普通 Web 服务的 p99 延迟有什么本质不同（流式响应下"延迟"是什么）
-- [ ] 冷启动问题：模型加载几十秒，扩容根本来不及——生产上怎么办
+- [ ] **PagedAttention 到底解决什么？** 接 Phase 0 的 KV cache：为什么朴素实现要预分配 max_len 的显存、碎片率有多高、分页怎么解决。**Phase 0 认真做了的话这里应该秒懂** ⏸ 待做（接 Phase 0 的 KV cache）
+- [ ] **continuous batching vs static batching**：为什么 LLM 推理特别适合前者？（不同请求生成长度差异巨大） ⏸ 待做
+- [ ] **prefill vs decode 是两种完全不同的负载**：一个 compute-bound 一个 memory-bandwidth-bound。这解释了为什么 TTFT 和 TPOT 要分开看、为什么 batch size 对两者影响相反 ✅ **已用在指标设计上**：TTFT/TPOT 分开告警，理由见 phase6-why §2
+- [x] **为什么 LLM 服务的 HPA 不能按 CPU 扩？** 该按什么扩，为什么是队列深度 → 写进 `kubernetes/agent-deployment.yaml`，并**故意不启用 HPA**
+- [x] LLM 服务的 SLO 该怎么定？和普通 Web 服务的 p99 延迟有什么本质不同（流式响应下"延迟"是什么） → `monitoring/alerts.yaml` 4 组 9 条；核心是 **canary 检出率（按家族）**
+- [x] 冷启动问题：模型加载几十秒，扩容根本来不及——生产上怎么办 → `startupProbe` 容忍 5 分钟；**liveness 故意不查模型**，否则慢启动变崩溃循环
 
 ### ③ 落仓
 
-- [ ] `deployment/` + `kubernetes/` + `monitoring/`
-- [ ] `docs/phase6-llm-serving.md`
-- [ ] `docs/phase6-mac-limitations.md`（诚实记录哪些没在真 GPU 上验证）
+- [x] `deployment/` + `kubernetes/` + `monitoring/` → 均已落仓
+- [x] `docs/phase6-llm-serving.md` 🔄 **合并为 `docs/phase6-why.md`**（与前几阶段体例一致）
+- [x] `docs/phase6-mac-limitations.md`（诚实记录哪些没在真 GPU 上验证） 🔄 **并入 `phase6-why.md` §6** —— Mac 限制贯穿每个设计决定，单独成篇会被当成免责声明
 
 ### 检查清单
 
-- [ ] Pod 正常运行，自己设计的 readiness 探针有效
+- [x] Pod 正常运行，自己设计的 readiness 探针有效 → Prometheus / Grafana Pod 均 Running；`/readyz` 正负两面实测（模型可用 200 / 不可用 503，而 healthz 始终 200）
 - [ ] Grafana 能看到 TTFT 和吞吐量
 - [ ] 压测能触发 KEDA 自动扩容
 - [ ] 能解释 PagedAttention 原理，并说清它和 Phase 0 里 KV cache 的关系
