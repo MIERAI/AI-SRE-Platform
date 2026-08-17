@@ -1,0 +1,23 @@
+{
+  "label": "MLX mlx-community/Qwen3-4B-4bit + finetune/adapters/nomask",
+  "by_family": {
+    "F6a_形式泛化": [
+      32,
+      32
+    ],
+    "F6b_无害诱饵": [
+      23,
+      32
+    ]
+  },
+  "tp": 32,
+  "fp": 9,
+  "fn": 0,
+  "tn": 23,
+  "unparsed": 0,
+  "total": [
+    55,
+    64
+  ],
+  "median_latency_ms": 532.4054581578821
+}

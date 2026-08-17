@@ -16,3 +16,15 @@ agent/parser/out_extract_*.json
 agent/out_checkpoints.sqlite*
 rag/corpus/
 rag/store/
+
+# ── Phase 5/6 的实验产物 ────────────────────────────────────────────
+# LoRA adapter：权重已被上面的 *.safetensors 排除，剩下的 adapter_config.json /
+# eval.json 单独留着没意义（内容已汇总进 finetune/results/）。
+finetune/adapters/
+# 脚本自动生成的临时 runner 与配置（noise_floor.py / ab_init.py / sweep_rank.py
+# 每次运行都会重写它们）—— 保留手写的 config-r8 / v2 / v2b / nomask 即可。
+finetune/_run_*.py
+finetune/config-noise-*.yaml
+finetune/config-init-*.yaml
+finetune/config-sweep-*.yaml
+finetune/logs/

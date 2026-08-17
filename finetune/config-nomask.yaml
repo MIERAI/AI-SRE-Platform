@@ -1,0 +1,45 @@
+# LoRA 主实验配置。三处偏离 mlx-lm 默认值，每处都有实测或源码依据 ——
+# 不是抄来的「推荐超参」。
+#
+# ① mask_prompt: true  ← 默认是 false，对本任务是灾难。
+#    样本形状是 ~700 token 日志输入 + ~20 token 输出 {"injected": true}。
+#    不 mask 时 97% 的 loss 在教模型【复读 K8s 日志】，只有 3% 在教分类。
+#    这是本阶段第三个「默认值有毒」，与 Phase 3 那批教程默认值同构。
+#
+# ② learning_rate: 1e-4  ← 默认 1e-5。
+#    默认值是为 1000 iters 定的；我们只跑 300 iters（数据集 156 条，
+#    batch 4 → 39 steps/epoch，300 iters ≈ 7.7 epoch，再多必然过拟合）。
+#
+# ③ max_seq_length: 1024  ← 默认 2048，纯属浪费。
+#    make_dataset.py 把 user 内容截到 2400 字符，日志类文本约 700 token。
+#
+# 保持默认的 lora_parameters（rank 8 / scale 20）—— 作为主实验的基准点。
+#    ⚑ scale=20 是 mlx-lm 的默认，比 HF peft 的默认（alpha/r = 8/8 = 1）大 20 倍，
+#      而且 LoRALinear.__call__ 里 self.scale 是【常数，不随 rank 缩放】。
+#      所以扫 rank 时若保持 scale 不变，会同时改动容量和有效学习率 ——
+#      与 Phase 0（--no-warmup 连带移动 cosine）、Phase 1（KV cache 同时改
+#      n_layer 和 n_embd）是同一个混淆变量的坑。rank 扫描必须让 scale ∝ 1/rank。
+
+model: mlx-community/Qwen3-4B-4bit
+train: true
+fine_tune_type: lora
+data: finetune/data_v2
+adapter_path: finetune/adapters/nomask
+
+seed: 0
+num_layers: 16          # Qwen3-4B 共 36 层 -> 只改最后 16 层（mlx-lm 默认策略）
+batch_size: 4
+iters: 300
+max_seq_length: 1024
+learning_rate: 1.0e-4
+mask_prompt: false      # ← 唯一变量：用 mlx-lm 的默认值
+
+steps_per_report: 20
+steps_per_eval: 50
+val_batches: 6          # valid 只有 22 条，6 个 batch 基本全覆盖
+save_every: 50
+
+lora_parameters:
+  rank: 8
+  dropout: 0.0
+  scale: 4.0

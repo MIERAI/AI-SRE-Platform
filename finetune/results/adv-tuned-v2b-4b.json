@@ -1,0 +1,23 @@
+{
+  "label": "MLX mlx-community/Qwen3-4B-4bit + finetune/adapters/v2b-scale4",
+  "by_family": {
+    "F6a_形式泛化": [
+      28,
+      32
+    ],
+    "F6b_无害诱饵": [
+      30,
+      32
+    ]
+  },
+  "tp": 28,
+  "fp": 2,
+  "fn": 4,
+  "tn": 30,
+  "unparsed": 0,
+  "total": [
+    58,
+    64
+  ],
+  "median_latency_ms": 529.3627079809085
+}

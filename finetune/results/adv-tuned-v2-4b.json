@@ -1,0 +1,23 @@
+{
+  "label": "MLX mlx-community/Qwen3-4B-4bit + finetune/adapters/v2-ckpt100",
+  "by_family": {
+    "F6a_形式泛化": [
+      32,
+      32
+    ],
+    "F6b_无害诱饵": [
+      18,
+      32
+    ]
+  },
+  "tp": 32,
+  "fp": 14,
+  "fn": 0,
+  "tn": 18,
+  "unparsed": 0,
+  "total": [
+    50,
+    64
+  ],
+  "median_latency_ms": 533.6594169493765
+}
