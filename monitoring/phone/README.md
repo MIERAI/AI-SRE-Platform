@@ -47,7 +47,8 @@ HTTP 服务实际发一次请求。
 | `diskguard.sh` | 磁盘保护：低于阈值自动暂停下载（带滞回） |
 | `logrotate.sh` | 日志轮转。含白名单外的兜底 —— 失控日志往往是临时起的 |
 | `selfrepair.sh` | 连续启动失败时**隔离**（不删除）损坏数据并重建 |
-| `memprobe.py` | 内存压力探针：测出多少内存压力下 Termux 被杀 |
+| `memprobe.py` | 内存压力探针（匿名/mmap 两种模式）|
+| `cpuprobe.sh` `procprobe.sh` | CPU 满载 / 进程数 探针 |
 | `verify.py` | 部署自检：告警能否触发、面板有无数据 |
 
 ## 踩过的坑（都写在对应文件的注释里）
@@ -110,8 +111,8 @@ python ~/verify.py     # 告警能否触发 + 每个面板当前是否真有数�
 
 | 手段 | 状态 |
 |---|---|
-| 内存分配尖峰 | 实测会杀整组。llama.cpp 不设 `-c` 时 RSS 10 GB → 必死 |
-| **phantom process 上限** | Android 12+ 机制，**上限 32 个子进程**。实测 Android 16/realme 上生效。服务空载只占 8 个，压力主要来自累积的 SSH 会话（每条 +2）和忘了停的调试脚本。上限从 Termux 里读不到也改不了（要 adb）。已加 `phone_process_count` 指标 + >24 告警 |
+| 内存分配尖峰 | **实测阈值约 17 GB 匿名分配** —— 判据是「内核无处可回收」（swap 剩 105 MB + 页缓存剩 258 MB），不是「内存不够」。llama 的 8.6~10 GB 远达不到。详见 [`docs/phone-inference-limits.md`](../../docs/phone-inference-limits.md) |
+| **phantom process 上限** | 文档说 Android 12+ 上限 32，但**实测在这台 realme 上推到 60 个进程都未触发**。服务空载只占 8 个，压力主要来自累积的 SSH 会话（每条 +2）和忘了停的调试脚本。上限从 Termux 里读不到也改不了（要 adb）。已加 `phone_process_count` 指标 + >24 告警 |
 | **失控日志填满磁盘** | 实测见过 378 MB / 3 分钟（约 2 MB/s）→ 638 GB 在 88 小时内可被填满。已加 `logrotate.sh` |
 | **硬杀导致数据损坏** | Prometheus WAL / Grafana sqlite / filebrowser bolt 损坏会让服务**拒绝启动**，而 watchdog 每 15 分钟重试、日志一直有记录，看着像在工作。已加 `selfrepair.sh`（连续 3 次失败→隔离数据重建）|
 | 磁盘被下载吃满 | `diskguard.sh` 已防 |
