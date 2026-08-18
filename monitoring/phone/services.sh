@@ -160,6 +160,33 @@ status_all() {
   done
 }
 
+# ⚑ start/stop/restart 必须互斥。实测事故：.bashrc 钩子和 watchdog
+#   几乎同时调 `services.sh start`，两者都判定「没在跑」、都去启动，
+#   第二个抢到端口、第一个绑定失败退出，PID 文件指向哪个变得不确定。
+#   最坏状态是 PID 文件指向死进程而端口被活进程占着 ——
+#   status 显示 ✗ 但服务其实好的，watchdog 则一遍遍启动、次次绑定失败。
+#   用 mkdir 做锁（原子操作，不依赖 flock）。
+LOCK="$HOME/.services.lock"
+acquire_lock() {
+  local i
+  for i in $(seq 1 40); do
+    if mkdir "$LOCK" 2>/dev/null; then
+      trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
+      return 0
+    fi
+    # 陈旧锁清理：上一次执行中途被杀（安卓强杀很常见）会留下锁目录，
+    # 不清理就永久死锁 —— 而那正是最需要 start 能跑的时候。
+    if [ -d "$LOCK" ]; then
+      local age
+      age=$(( $(date +%s) - $(stat -c %Y "$LOCK" 2>/dev/null || date +%s) ))
+      [ "$age" -gt 180 ] && rmdir "$LOCK" 2>/dev/null
+    fi
+    sleep 1
+  done
+  echo "  · 另一个 services.sh 正在执行，已跳过（避免竞态）"
+  return 1
+}
+
 CMD="${1:-status}"; shift 2>/dev/null || true
 INCLUDE_SSHD=0
 NO_WATCHDOG=0
@@ -176,9 +203,11 @@ done
 
 case "$CMD" in
   start)
+    acquire_lock || exit 0
     echo "启动 $DEVICE 的服务："
     for s in $TARGETS; do start_one "$s"; done ;;
   stop)
+    acquire_lock || exit 0
     echo "停止 $DEVICE 的服务："
     for s in $TARGETS; do
       if [ "$s" = "sshd" ] && [ "$INCLUDE_SSHD" = "0" ]; then

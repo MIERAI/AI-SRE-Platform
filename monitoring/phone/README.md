@@ -64,6 +64,7 @@ HTTP 服务实际发一次请求。
 | AriaNg 页面打开是乱码 | release 的 AllInOne 资源是 `.zip` 不是 `.html`，直接改名当页面用了 |
 | 完整性面板一直空着 | `offset 24h` 要等满 24 小时才有数据。改 `max_over_time` 立刻可用，且能识别「掉了又补回一部分」 |
 | Termux 被杀后等 30 分钟也不恢复 | **安卓强杀会连带取消 JobScheduler 任务**，之后没有任何东西会触发。电池优化设成「不受限制」也无效——那管 Doze/App Standby，管不了低内存杀手 |
+| 同一服务被连续重启两次 | `.bashrc` 钩子与 watchdog 并发调 `services.sh start`，都判定「没在跑」都去启动，后者抢到端口、前者绑定失败。加 mkdir 互斥锁（实测三个并发被串行化，只有一个真正执行） |
 | aria2「已启动」但关掉窗口就死 | `nohup` 只挡 SIGHUP 的默认动作，而 aria2 主动把 SIGHUP 当关机信号（日志留 `Download Results:`）。改用 `--daemon=true` |
 | 手机2 失联：ping 通但 8022 拒绝 | `tunwatch.sh` 只管隧道不管 sshd，而 sshd 才是入口。手机1 的 watchdog 一直调 `services.sh start`，两台逻辑不一致 |
 | Termux 被杀的同时 Tailscale 也断，且不自动回来 | 安卓 VPN 只有开了「始终开启的 VPN」才会自启。watchdog 管不到它 |
@@ -103,6 +104,11 @@ python ~/verify.py     # 告警能否触发 + 每个面板当前是否真有数�
   不需要敲任何命令。
 
 ## 已知缺口
+
+**File Browser 上游要归档了。** 启动日志里的公告：项目于 **2026-09-01 归档**，
+之后不再有版本发布和安全修复。它只绑 127.0.0.1、经 SSH 隧道访问，
+暴露面很小，但长期要考虑替代（或接受不再更新）。
+
 
 **告警送不出去。** 8 条规则会写成 `ALERTS{...}` 序列存进 TSDB，可以事后取证，
 但没有任何东西会通知人。设备彻底失联时更糟 —— 连「我死了」都发不出来。
