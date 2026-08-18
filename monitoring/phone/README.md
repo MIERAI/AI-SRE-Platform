@@ -45,6 +45,9 @@ HTTP 服务实际发一次请求。
 | `shortcuts-phone1/` `shortcuts-phone2/` | Termux:Widget 桌面快捷方式（点图标即执行） |
 | `archive_photos.py` | 照片按 EXIF 日期归档 + 缩略图 |
 | `diskguard.sh` | 磁盘保护：低于阈值自动暂停下载（带滞回） |
+| `logrotate.sh` | 日志轮转。含白名单外的兜底 —— 失控日志往往是临时起的 |
+| `selfrepair.sh` | 连续启动失败时**隔离**（不删除）损坏数据并重建 |
+| `memprobe.py` | 内存压力探针：测出多少内存压力下 Termux 被杀 |
 | `verify.py` | 部署自检：告警能否触发、面板有无数据 |
 
 ## 踩过的坑（都写在对应文件的注释里）
@@ -102,6 +105,19 @@ python ~/verify.py     # 告警能否触发 + 每个面板当前是否真有数�
 ⚑ 手机1 那组刻意做成【不懂技术的人也能用】：托人去房间时点「1-启动全部」，
   它会启动服务、重新注册定时任务、最后打印 `✅ 全部正常（8/8）`。
   不需要敲任何命令。
+
+## 能让 Termux 崩掉的手段（实测清单）
+
+| 手段 | 状态 |
+|---|---|
+| 内存分配尖峰 | 实测会杀整组。llama.cpp 不设 `-c` 时 RSS 10 GB → 必死 |
+| **phantom process 上限** | Android 12+ 机制，**上限 32 个子进程**。实测 Android 16/realme 上生效。服务空载只占 8 个，压力主要来自累积的 SSH 会话（每条 +2）和忘了停的调试脚本。上限从 Termux 里读不到也改不了（要 adb）。已加 `phone_process_count` 指标 + >24 告警 |
+| **失控日志填满磁盘** | 实测见过 378 MB / 3 分钟（约 2 MB/s）→ 638 GB 在 88 小时内可被填满。已加 `logrotate.sh` |
+| **硬杀导致数据损坏** | Prometheus WAL / Grafana sqlite / filebrowser bolt 损坏会让服务**拒绝启动**，而 watchdog 每 15 分钟重试、日志一直有记录，看着像在工作。已加 `selfrepair.sh`（连续 3 次失败→隔离数据重建）|
+| 磁盘被下载吃满 | `diskguard.sh` 已防 |
+| 拔电 / 断电 | 有告警但**送不出去**，实质无防御 |
+| 持续满载导致热杀 | 未测。安卓有 thermal mitigation 会杀后台应用 |
+| realme UI 的后台冻结 | 独立于标准安卓设置，需在手机上单独关 |
 
 ## 恢复路径的真实状态（实测）
 

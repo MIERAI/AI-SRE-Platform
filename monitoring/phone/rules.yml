@@ -114,6 +114,41 @@ groups:
         annotations:
           summary: "已脱离充电 10 分钟，当前电量 {{ with query \"phone_battery_percentage\" }}{{ . | first | value }}{{ end }}%"
 
+      # ⚑ Android 12+ 的 phantom process 机制：应用的子进程超过 32 个就被杀。
+      #   实测（Android 16 / realme）：8 个服务空载只占 8 个进程，
+      #   压力几乎全来自累积的 SSH 会话和忘了停的调试脚本（每条 ssh +2）。
+      #   撞上这个上限是【整组进程一起死】，和内存压力杀是同一后果。
+      #   上限从 Termux 里读不到也改不了，只能提前预警。
+      - alert: PhoneProcessCountHigh
+        expr: phone_process_count > 24
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "进程数 {{ $value | printf \"%.0f\" }}/32 —— 接近 Android phantom 上限，检查是否有残留的调试会话"
+
+      # ⚑ 这条针对的是最隐蔽的一类：服务因数据损坏拒绝启动，
+      #   而 watchdog 每 15 分钟重试、日志里一直有记录，看着像在工作。
+      - alert: PhoneServiceStartFailing
+        expr: phone_start_failures_pending > 0
+        for: 20m
+        labels: {severity: critical}
+        annotations:
+          summary: "有服务连续启动失败（累计 {{ $value | printf \"%.0f\" }} 次）—— 查 selfrepair.log"
+
+      - alert: PhoneDataQuarantined
+        expr: increase(phone_quarantined_datasets[6h]) > 0
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "有损坏数据被隔离到 ~/quarantine —— 说明发生过数据损坏，需人工确认"
+
+      - alert: PhoneLogsBloated
+        expr: phone_log_total_bytes > 536870912
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "日志合计 {{ $value | humanize1024 }}B —— 轮转可能没生效（实测见过 2 MB/s 的失控日志）"
+
       - alert: PhoneMemoryLow
         expr: phone_memavailable_bytes < 1073741824
         for: 5m

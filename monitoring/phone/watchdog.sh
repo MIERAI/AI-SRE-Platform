@@ -24,11 +24,37 @@ date "+%F %T watchdog invoked" >> ~/boot_trace.log
 termux-wake-lock 2>/dev/null
 
 # ── 拉起掉线的服务 ──────────────────────────────────────────
+# ⚑ 重启次数记在【独立的单调计数文件】里，不再数 watchdog.log 的行数。
+#   原因：日志轮转会让行数归零。increase() 能正确处理计数器重置，
+#   但「累计挂过多少次」这个含义会丢 —— 而那是判断设备稳定性的核心数字。
+CNT=~/restart_count
+[ -f "$CNT" ] || echo 0 > "$CNT"
+# ⚑ 用临时文件收集本轮启动失败的服务名，而不是在管道里累加变量 ——
+#   `... | while read` 的 while 体跑在子 shell 里，里面改的变量出不来。
+FAILED_TMP=~/.watchdog_failed.$$
+: > "$FAILED_TMP"
 ~/services.sh start 2>&1 | while IFS= read -r line; do
   case "$line" in
-    *已启动*|*启动失败*) log "${line# }" ;;
+    *已启动*)
+      log "${line# }"
+      echo $(( $(cat "$CNT" 2>/dev/null || echo 0) + 1 )) > "$CNT" ;;
+    *启动失败*)
+      log "${line# }"
+      echo "$line" | awk '{print $2}' >> "$FAILED_TMP" ;;
   esac
 done
+FAILED=$(tr '\n' ' ' < "$FAILED_TMP"); rm -f "$FAILED_TMP"
+
+# ── 连续启动失败 → 隔离损坏数据 ──────────────────────────────
+# ⚑ 硬杀之后 Prometheus 的 WAL / Grafana 的 sqlite / filebrowser 的 bolt
+#   都可能损坏到【拒绝启动】。那时 watchdog 会每 15 分钟重试一次、
+#   日志里一直有记录，人两个月后回来才发现监控从第三天就停了。
+[ -x ~/selfrepair.sh ] && ~/selfrepair.sh "$FAILED" >/dev/null 2>&1
+
+# ── 日志轮转 ────────────────────────────────────────────────
+# ⚑ 今天见过 378 MB / 3 分钟的失控日志（约 2 MB/s）。
+#   按那个速率 638 GB 会在 88 小时内填满，而人要离开两个月。
+[ -x ~/logrotate.sh ] && ~/logrotate.sh >/dev/null 2>&1
 
 # ── 磁盘保护 ────────────────────────────────────────────────
 # ⚑ 放在拉起服务【之后】：万一 aria2 刚被拉起来，也要立刻受保护约束，

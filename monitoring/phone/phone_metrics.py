@@ -139,14 +139,30 @@ def collect():
         A(f'phone_disk_free_bytes {st.f_bavail*st.f_frsize}')
     except Exception: pass
 
-    # ⚑ 被杀次数：从 watchdog.log 累计。这是【唯一】能反映"曾经挂过"的指标 ——
-    #   因为进程被杀期间 exporter 自己也停了，那段时间根本没有数据点。
+    # ⚑ 被杀次数：读独立的单调计数文件，不再数 watchdog.log 的行数 ——
+    #   日志轮转会让行数归零，而这个数字是判断设备稳定性的核心依据。
+    #   它也是【唯一】能反映"曾经挂过"的指标：进程被杀期间 exporter 自己也停了，
+    #   那段时间根本没有数据点。
     try:
-        n = sum(1 for _ in open(os.path.expanduser('~/watchdog.log')))
-        A('# HELP phone_service_restarts_total watchdog 记录的累计重启次数')
-        A('# TYPE phone_service_restarts_total counter')
-        A(f'phone_service_restarts_total {n}')
-    except Exception: pass
+        with open(os.path.expanduser('~/restart_count')) as f:
+            A('# HELP phone_service_restarts_total watchdog 累计拉起服务的次数')
+            A('# TYPE phone_service_restarts_total counter')
+            A(f'phone_service_restarts_total {int(f.read().strip())}')
+    except Exception:
+        pass
+
+    # 日志占用。失控日志是真实见过的死法（378 MB / 3 分钟）。
+    try:
+        with open(os.path.expanduser('~/logrotate_stats.json')) as f:
+            lr = json.load(f)
+        A('# HELP phone_log_total_bytes 已知日志文件合计大小')
+        A('# TYPE phone_log_total_bytes gauge')
+        A(f'phone_log_total_bytes {lr.get("total_kb", 0) * 1024}')
+        A('# HELP phone_log_rotated_last 上一轮截断了几个文件')
+        A('# TYPE phone_log_rotated_last gauge')
+        A(f'phone_log_rotated_last {lr.get("rotated", 0)}')
+    except Exception:
+        pass
 
     # ⚑ 照片归档的健康度。归档脚本是【定时跑的批处理】，它停掉时没有任何
     #   进程会消失、没有端口会关闭 —— 所有存活类指标都照常绿。
@@ -216,6 +232,39 @@ def collect():
             A('# HELP phone_photo_push_last_timestamp 手机2 上次成功推送的时刻')
             A('# TYPE phone_photo_push_last_timestamp gauge')
             A(f'phone_photo_push_last_timestamp {int(f.read().strip())}')
+    except Exception:
+        pass
+
+    # ⚑ 进程数。Android 12+ 有 phantom process 机制：一个应用派生的子进程
+    #   超过 32 个，系统直接杀掉（Android 16 / SDK 36 上确认生效）。
+    #   这个上限从 Termux 里既读不到也改不了（要 adb 或 root），
+    #   所以只能盯着它。
+    #
+    #   实测：8 个服务空载只占 8 个进程，压力几乎全来自【累积的 SSH 会话
+    #   和忘了停的调试脚本】—— 每条 ssh 连接 +2 个 sshd-session。
+    #   所以要防的是累积，而累积正是指标能抓到的。
+    try:
+        n = len([d for d in os.listdir('/proc') if d.isdigit()])
+        A('# HELP phone_process_count Termux 可见进程数（phantom 上限 32）')
+        A('# TYPE phone_process_count gauge')
+        A(f'phone_process_count {n}')
+        A('# HELP phone_phantom_limit Android phantom process 上限')
+        A('# TYPE phone_phantom_limit gauge')
+        A('phone_phantom_limit 32')
+    except Exception:
+        pass
+
+    # ⚑ 自修复状态。pending_failures 持续大于 0 = 有服务反复起不来，
+    #   这是「日志看着正常、服务实际永远起不来」那类失效的唯一信号。
+    try:
+        with open(os.path.expanduser('~/selfrepair_stats.json')) as f:
+            sr = json.load(f)
+        A('# HELP phone_start_failures_pending 各服务连续启动失败的累计计数')
+        A('# TYPE phone_start_failures_pending gauge')
+        A(f'phone_start_failures_pending {sr.get("pending_failures", 0)}')
+        A('# HELP phone_quarantined_datasets 已隔离的损坏数据份数')
+        A('# TYPE phone_quarantined_datasets gauge')
+        A(f'phone_quarantined_datasets {sr.get("quarantined", 0)}')
     except Exception:
         pass
 
