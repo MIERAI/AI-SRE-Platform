@@ -33,7 +33,7 @@ TRANSMISSION_USER="${TRANSMISSION_USER:-nas}"
 TRANSMISSION_PASS="${TRANSMISSION_PASS:-}"
 
 case "$(whoami)" in
-  u0_a506) DEVICE=phone1; ALL_SVC="sshd rclone transmission exporter prometheus grafana filebrowser" ;;
+  u0_a506) DEVICE=phone1; ALL_SVC="sshd rclone transmission aria2 ariang exporter prometheus grafana filebrowser" ;;
   u0_a371) DEVICE=phone2; ALL_SVC="sshd tunnel" ;;
   *)       DEVICE=unknown; ALL_SVC="sshd" ;;
 esac
@@ -54,6 +54,8 @@ is_up() {
     prometheus)   pid_of "$HOME/prom.pid" >/dev/null ;;
     grafana)      pid_of "$HOME/grafana.pid" >/dev/null ;;
     filebrowser)  pid_of "$HOME/fb.pid" >/dev/null ;;
+    aria2)        pid_of "$HOME/aria2.pid" >/dev/null ;;
+    ariang)       pid_of "$HOME/ariang.pid" >/dev/null ;;
     tunnel)       [ "$(bash "$HOME/tun.sh" status 2>/dev/null)" = "up" ] ;;
     *) return 1 ;;
   esac
@@ -68,6 +70,8 @@ svc_pid() {
     prometheus)   pid_of "$HOME/prom.pid" ;;
     grafana)      pid_of "$HOME/grafana.pid" ;;
     filebrowser)  pid_of "$HOME/fb.pid" ;;
+    aria2)        pid_of "$HOME/aria2.pid" ;;
+    ariang)       pid_of "$HOME/ariang.pid" ;;
     tunnel)       pid_of "$HOME/tun.pid" ;;
   esac
 }
@@ -78,6 +82,7 @@ svc_port() {
     sshd) echo 8022 ;; rclone) echo 8080 ;; transmission) echo 9091 ;;
     exporter) echo 9101 ;; prometheus) echo 9090 ;; grafana) echo 3000 ;;
     filebrowser) echo 8081 ;; tunnel) echo 3000 ;;
+    aria2) echo 6800 ;; ariang) echo 6801 ;;
   esac
 }
 
@@ -95,6 +100,7 @@ start_one() {
     prometheus)   "$HOME/prom/start-prometheus.sh" ;;
     grafana)      "$HOME/grafana/start-grafana.sh" ;;
     filebrowser)  "$HOME/fb/start-filebrowser.sh" ;;
+    aria2|ariang) "$HOME/start-aria2.sh" ;;
     tunnel)       bash "$HOME/tun.sh" start >/dev/null ;;
   esac
   sleep 1
@@ -115,6 +121,7 @@ stop_one() {
                   case "$1" in
                     exporter) f="$HOME/exporter.pid" ;; prometheus) f="$HOME/prom.pid" ;;
                     grafana)  f="$HOME/grafana.pid"  ;; filebrowser) f="$HOME/fb.pid" ;;
+                    aria2)    f="$HOME/aria2.pid"    ;; ariang)      f="$HOME/ariang.pid" ;;
                   esac
                   local p; p=$(cat "$f" 2>/dev/null)
                   [ -n "$p" ] && kill "$p" 2>/dev/null
@@ -135,6 +142,16 @@ status_all() {
     port=$(svc_port "$s")
     if [ "$s" = "sshd" ]; then
       code=$(is_up "$s" && echo "监听" || echo "—")
+    elif [ "$s" = "aria2" ]; then
+      # ⚑ aria2 的 RPC 端口对普通 GET 返回 400，光看状态码分不出
+      #   「服务正常」和「服务坏了」。所以发一次真的 JSON-RPC 调用。
+      local sec ver
+      sec=$(cat "$HOME/.aria2/RPC_SECRET.txt" 2>/dev/null)
+      ver=$(timeout 8 curl -s -m 6 "http://127.0.0.1:$port/jsonrpc" \
+              -H "Content-Type: application/json" \
+              -d "{\"jsonrpc\":\"2.0\",\"id\":\"h\",\"method\":\"aria2.getVersion\",\"params\":[\"token:$sec\"]}" \
+              2>/dev/null | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
+      [ -n "$ver" ] && code="RPC v$ver ✓" || code="RPC ✗ 无应答"
     else
       code=$(timeout 8 curl -s -o /dev/null -m 6 -w "%{http_code}" "http://127.0.0.1:$port/" 2>/dev/null)
       case "$code" in

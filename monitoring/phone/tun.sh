@@ -22,6 +22,8 @@ case "$1" in
        -L 9090:127.0.0.1:9090 \
        -L 9101:127.0.0.1:9101 \
        -L 8081:127.0.0.1:8081 \
+       -L 6800:127.0.0.1:6800 \
+       -L 6801:127.0.0.1:6801 \
        -p 8022 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
        -o ConnectTimeout=25 -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
        u0_a506@100.80.225.15 && \

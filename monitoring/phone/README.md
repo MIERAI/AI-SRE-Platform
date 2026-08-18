@@ -6,6 +6,7 @@
 ```
 手机1（在家，常插电）                        手机2（随身）
   sshd  rclone(WebDAV)  transmission            sshd
+  aria2 + AriaNg（下载机）
   exporter → Prometheus → Grafana               tunnel ──┐
   File Browser                                  photopush │
   archive_photos（照片归档）                              │
@@ -36,6 +37,7 @@ HTTP 服务实际发一次请求。
 | `prometheus.yml` `rules.yml` | 抓取配置与 8 条告警 |
 | `grafana.ini` `provisioning-*.yaml` `phone-*.json` | Grafana 与两块看板 |
 | `start-{prometheus,grafana,filebrowser}.sh` | 各服务的启动包装 |
+| `aria2.conf` `start-aria2.sh` | 下载机：HTTP 多线程分片 / BT / 磁力 + AriaNg 界面 |
 | `photopush.sh` `tun.sh` | 手机2 侧：照片推送与隧道 |
 | `archive_photos.py` | 照片按 EXIF 日期归档 + 缩略图 |
 | `verify.py` | 部署自检：告警能否触发、面板有无数据 |
@@ -54,6 +56,7 @@ HTTP 服务实际发一次请求。
 | 每轮重传全部照片 | `grep -v` 过滤掉全部行时返回 1，触发了 `\|\| cp 完整清单` |
 | transmission 重启后登录不上 | 密码抽取少了一位。探测返回 401 是「正常」的，看不出来 |
 | 告警界面一直安详的 `inactive` | 裸 `and` 的 label 集不匹配，规则**永不触发** |
+| AriaNg 页面打开是乱码 | release 的 AllInOne 资源是 `.zip` 不是 `.html`，直接改名当页面用了 |
 
 共同的教训：**计数器对，不代表事情做对了。** 每一处都是去数目标端的实际文件、
 实际序列数、实际能否认证才发现的。
