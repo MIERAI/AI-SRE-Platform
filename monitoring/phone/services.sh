@@ -4,9 +4,14 @@
 #     ~/services.sh start            启动所有未运行的（幂等，可反复跑）
 #     ~/services.sh stop             停止所有【除 sshd 外】的服务
 #     ~/services.sh stop --all       连 sshd 一起停 —— 远程执行会失去连接
+#     ~/services.sh stop --no-watchdog   顺带取消自愈任务，服务不会自动回来
 #     ~/services.sh restart          先停后起
 #     ~/services.sh status           逐个检查：进程 + 端口 + HTTP 是否真在服务
 #     ~/services.sh start grafana    只操作指定的服务
+#
+# ⚑ **stop 默认只是暂停最多 15 分钟** —— watchdog 到点会把服务全拉回来。
+#   这一点常让人以为「关闭失败」。真要彻底停用 --no-watchdog，
+#   代价是同时失去自愈保护，恢复得手动 start 并重新注册任务。
 #
 # ⚑ **stop 默认保留 sshd**，这不是疏忽。这台设备唯一的入口就是 sshd，
 #   人在外地时一旦把它停掉，就只能等回家才能恢复 —— 没有任何补救手段
@@ -157,10 +162,12 @@ status_all() {
 
 CMD="${1:-status}"; shift 2>/dev/null || true
 INCLUDE_SSHD=0
+NO_WATCHDOG=0
 TARGETS=""
 for a in "$@"; do
   case "$a" in
     --all) INCLUDE_SSHD=1 ;;
+    --no-watchdog) NO_WATCHDOG=1 ;;
     -*) ;;
     *) TARGETS="$TARGETS $a" ;;
   esac
@@ -179,7 +186,14 @@ case "$CMD" in
         continue
       fi
       stop_one "$s"
-    done ;;
+    done
+    if [ "$NO_WATCHDOG" = "1" ]; then
+      # ⚑ 取消后服务不会自己回来，必须手动 start 并重新注册任务。
+      timeout 15 termux-job-scheduler --cancel-all >/dev/null 2>&1
+      echo "  · 自愈任务已取消 —— 服务不会自动恢复"
+    else
+      echo "  · 自愈任务仍在，15 分钟内服务会自动回来（要彻底停加 --no-watchdog）"
+    fi ;;
   restart)
     "$0" stop $TARGETS; echo; "$0" start $TARGETS ;;
   status)

@@ -18,7 +18,8 @@
 
 ```bash
 ~/services.sh start      # 启动所有未运行的（幂等）
-~/services.sh stop       # 停止全部，但【保留 sshd】
+~/services.sh stop       # 停止全部，但【保留 sshd】；15 分钟内会被 watchdog 拉回
+~/services.sh stop --no-watchdog   # 连自愈一起停，不会自动恢复
 ~/services.sh stop --all # 连 sshd 一起停 —— 远程执行会失去连接
 ~/services.sh status     # 进程 + 端口 + 实际 HTTP 响应
 ```
@@ -31,7 +32,6 @@ HTTP 服务实际发一次请求。
 | 文件 | 作用 |
 |---|---|
 | `services.sh` | 统一启停。**唯一定义「怎么启动」的地方** |
-| `stop.sh` | 一键关闭。默认保留 sshd 与自愈；`--all` 连自愈一起停 |
 | `watchdog.sh` | 15 分钟自愈，委托给 `services.sh`（54 行 → 36 行） |
 | `boot-10-sshd.sh` `boot-20-services-*.sh` | 开机自启，编号决定顺序 |
 | `phone_metrics.py` | 设备传感器 → Prometheus 格式 |
