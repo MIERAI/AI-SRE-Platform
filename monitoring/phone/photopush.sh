@@ -135,6 +135,10 @@ done
 sort -u "$SENT" -o "$SENT"
 
 if [ "$failed" = "0" ]; then
+  # ⚑ 每轮成功都记，哪怕传了 0 个文件 —— 这个时间戳的含义是
+  #   「推送端还活着且能连上手机1」，不是「有新照片」。
+  #   人在国外看健康面板时，想知道的正是前者。
+  ssh $SSH_OPTS "$DEST_USER@$DEST_HOST" "date +%s > ~/.last_photo_push" </dev/null >/dev/null 2>&1
   log "本轮完成，共 $total 个文件"
   echo "推送完成：$total 个文件"
 else

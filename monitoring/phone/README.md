@@ -35,7 +35,8 @@ HTTP 服务实际发一次请求。
 | `boot-10-sshd.sh` `boot-20-services-*.sh` | 开机自启，编号决定顺序 |
 | `phone_metrics.py` | 设备传感器 → Prometheus 格式 |
 | `prometheus.yml` `rules.yml` | 抓取配置与 8 条告警 |
-| `grafana.ini` `provisioning-*.yaml` `phone-*.json` | Grafana 与两块看板 |
+| `grafana.ini` `provisioning-*.yaml` `phone-*.json` | Grafana 与三块看板（桌面 / 移动 / 健康总览） |
+| `datastats.sh` | 各目录体积与文件数，缓存给 exporter |
 | `start-{prometheus,grafana,filebrowser}.sh` | 各服务的启动包装 |
 | `aria2.conf` `start-aria2.sh` | 下载机：HTTP 多线程分片 / BT / 磁力 + AriaNg 界面 |
 | `photopush.sh` `tun.sh` | 手机2 侧：照片推送与隧道 |
@@ -58,6 +59,7 @@ HTTP 服务实际发一次请求。
 | transmission 重启后登录不上 | 密码抽取少了一位。探测返回 401 是「正常」的，看不出来 |
 | 告警界面一直安详的 `inactive` | 裸 `and` 的 label 集不匹配，规则**永不触发** |
 | AriaNg 页面打开是乱码 | release 的 AllInOne 资源是 `.zip` 不是 `.html`，直接改名当页面用了 |
+| 完整性面板一直空着 | `offset 24h` 要等满 24 小时才有数据。改 `max_over_time` 立刻可用，且能识别「掉了又补回一部分」 |
 | 磁盘保护「已暂停下载」，下载照跑 | `set -u` 下裸 `$2` 触发 unbound variable，脚本中途夭折 |
 | 保护生效了，新任务仍全速下载 | aria2 拒绝 `max-concurrent-downloads=0`（最小 1），而响应被 `>/dev/null` 吞了 |
 

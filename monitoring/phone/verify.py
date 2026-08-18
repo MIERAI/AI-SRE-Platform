@@ -92,7 +92,7 @@ def main():
         ok &= hit
 
         boards = {}
-        for uid in ("phone1", "phone1m"):
+        for uid in ("phone1", "phone1m", "phone1h"):
             d = get(f"{GRAF}/api/dashboards/uid/{uid}", auth)["dashboard"]
             boards[uid] = d
             print(f"  ✅ 面板已加载：{d['title']}（{len(d['panels'])} 个 panel）")
@@ -108,7 +108,8 @@ def main():
     #   实测踩过：cpu 标签解析错误让 8 个核塌缩成一条 {cpu=""} 序列，
     #   这里照样打 ✅ —— 发现它靠的是「序列数该是 8 却只有 1」这个人眼比对。
     #   所以下面对已知基数的指标额外断言条数。
-    EXPECT = {"phone_cpu_freq_mhz": 8, "phone_service_up": 3, "up": 2}
+    EXPECT = {"phone_cpu_freq_mhz": 8, "phone_service_up": 9, "up": 2,
+              "phone_tailscale_up": 1, "phone_thumbnails_total": 1}
     empty = []
     for uid, dash in boards.items():
         print(f"  --- {dash['title']} ---")

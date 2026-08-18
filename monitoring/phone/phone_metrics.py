@@ -99,9 +99,39 @@ def collect():
     # ⚑ 这个列表必须与实际在跑的服务一致。Transmission 移除后忘了改这里，
     #   phone_service_up{service="transmission-daemon"} 会永远是 0，
     #   PhoneServiceDown 永久触发 —— 一条永远红着的告警比没有告警更糟。
+    #
+    # ⚑ filebrowser 和 prometheus 【不能用 pgrep -x】：它们由包装脚本以
+    #   相对路径启动，进程名是 './filebrowser'、'./prometheus'，匹配不到。
+    #   PID 文件是权威来源，与 services.sh 用的是同一套判据。
     for s in ('sshd', 'rclone', 'aria2c'):
         ok = subprocess.run(['pgrep', '-x', s], capture_output=True).returncode == 0
         A(f'phone_service_up{{service="{s}"}} {1 if ok else 0}')
+    for name, pidfile in (('exporter', 'exporter'), ('prometheus', 'prom'),
+                          ('grafana', 'grafana'), ('filebrowser', 'fb'),
+                          ('aria2', 'aria2'), ('ariang', 'ariang')):
+        ok = 0
+        try:
+            pid = int(open(os.path.expanduser(f'~/{pidfile}.pid')).read().strip())
+            os.kill(pid, 0)
+            ok = 1
+        except Exception:
+            pass
+        A(f'phone_service_up{{service="{name}"}} {ok}')
+
+    # ⚑ Tailscale 是安卓 App，不是 Termux 进程，pgrep 抓不到。
+    #   改用差分探测：连自己的 tailnet IP。Tailscale 掉了那个地址就不存在，
+    #   而 127.0.0.1 仍然通 —— 两者一对比就能区分「服务挂了」和「网络挂了」。
+    #   这个区分很要紧：人在国外连不上时，需要知道该不该托人去房间。
+    import socket
+    ts = 0
+    try:
+        with socket.create_connection(('100.80.225.15', 9101), timeout=3):
+            ts = 1
+    except Exception:
+        pass
+    A('# HELP phone_tailscale_up 自己的 tailnet 地址是否可达')
+    A('# TYPE phone_tailscale_up gauge')
+    A(f'phone_tailscale_up {ts}')
 
     try:
         st = os.statvfs(os.path.expanduser('~'))
@@ -155,6 +185,37 @@ def collect():
         A(f'phone_disk_guard_state {dg.get("code", 0)}')
         A('# TYPE phone_disk_guard_checked_timestamp gauge')
         A(f'phone_disk_guard_checked_timestamp {dg.get("checked", 0)}')
+    except Exception:
+        pass
+
+    # ⚑ 目录体积与文件数由 datastats.sh 每 15 分钟算好（现算要 0.5 秒，
+    #   而目录体积本来就不需要 15 秒精度）。文件数比体积更能暴露静默丢失：
+    #   照片从 18,421 掉到 17,900，体积只变几个百分点，文件数一眼就看出来。
+    try:
+        with open(os.path.expanduser('~/datastats.json')) as f:
+            ds = json.load(f)
+        A('# HELP phone_dir_bytes 各数据目录占用')
+        A('# TYPE phone_dir_bytes gauge')
+        for name, v in ds.get('dirs', {}).items():
+            A(f'phone_dir_bytes{{dir="{name}"}} {v["bytes"]}')
+        A('# HELP phone_dir_files 各数据目录文件数（突降=静默丢失）')
+        A('# TYPE phone_dir_files gauge')
+        for name, v in ds.get('dirs', {}).items():
+            A(f'phone_dir_files{{dir="{name}"}} {v["files"]}')
+        A('# HELP phone_thumbnails_total 缩略图数量，应与照片数一致')
+        A('# TYPE phone_thumbnails_total gauge')
+        A(f'phone_thumbnails_total {ds.get("thumbnails", 0)}')
+        A('# TYPE phone_datastats_computed_timestamp gauge')
+        A(f'phone_datastats_computed_timestamp {ds.get("computed", 0)}')
+    except Exception:
+        pass
+
+    # 手机2 上次成功推送照片的时刻（由 photopush.sh 写入）
+    try:
+        with open(os.path.expanduser('~/.last_photo_push')) as f:
+            A('# HELP phone_photo_push_last_timestamp 手机2 上次成功推送的时刻')
+            A('# TYPE phone_photo_push_last_timestamp gauge')
+            A(f'phone_photo_push_last_timestamp {int(f.read().strip())}')
     except Exception:
         pass
 

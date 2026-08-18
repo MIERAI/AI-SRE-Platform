@@ -52,6 +52,47 @@ groups:
         annotations:
           summary: "1 小时内 watchdog 拉起 {{ $value | printf \"%.0f\" }} 次"
 
+  - name: phone-data
+    interval: 60s
+    rules:
+      # ⚑ 数据完整性的哨兵。文件【减少】永远不是正常现象 ——
+      #   归档只增不删、推送只增不删。所以任何下降都意味着出事了：
+      #   误删、同步 bug、文件系统损坏。而体积变化可能只有几个百分点，
+      #   看不出来；文件数是离散的，一眼就能发现。
+      #   用 max_over_time 而非 offset：offset 在指标刚上线的头 1 小时内
+      #   完全无数据，规则处于「查不到序列」而非「条件不成立」——
+      #   这两者在界面上都显示 inactive，分不出来。
+      - alert: PhoneFilesDisappeared
+        expr: phone_dir_files - max_over_time(phone_dir_files[1h]) < 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.dir }} 目录文件数在 1 小时内减少了 {{ $value | printf \"%.0f\" }} 个"
+
+      # 归档是批处理，停掉时没有进程消失、没有端口关闭，所有存活指标照常绿。
+      - alert: PhotoArchiveStale
+        expr: time() - phone_photo_archive_last_run_timestamp > 5400
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "照片归档超过 90 分钟没运行（正常每 15 分钟一次）"
+
+      - alert: PhotoPushStale
+        expr: time() - phone_photo_push_last_timestamp > 5400
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "手机2 超过 90 分钟没成功推送 —— 可能被安卓回收，或不在网络上"
+
+      # ⚑ Tailscale 断了和手机1 死了，在其他所有指标上长得一模一样。
+      #   这条能区分：它红而别的绿 = 只是网络断了，不必托人去房间。
+      - alert: PhoneTailscaleDown
+        expr: phone_tailscale_up == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "tailnet 地址不可达 —— 服务可能都好着，只是远程进不来"
+
   - name: phone-physical
     interval: 30s
     rules:

@@ -35,6 +35,9 @@ if [ -d ~/nas/inbox ]; then
   python ~/archive_photos.py --quiet >>~/archive.log 2>&1 || log "归档脚本返回错误"
 fi
 
+# ── 数据目录统计（给健康面板用）────────────────────────────
+[ -x ~/datastats.sh ] && ~/datastats.sh >/dev/null 2>&1
+
 # ── 重新注册定时任务 ────────────────────────────────────────
 # ⚑ 实测过：系统没重启，任务却被 App Standby 悄悄移除了。
 #   persisted=true 保得住重启，保不住这个。所以每轮自己确认一次。
