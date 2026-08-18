@@ -34,6 +34,7 @@ HTTP 服务实际发一次请求。
 | `services.sh` | 统一启停。**唯一定义「怎么启动」的地方** |
 | `watchdog.sh` | 15 分钟自愈，委托给 `services.sh`（54 行 → 36 行） |
 | `boot-10-sshd.sh` `boot-20-services-*.sh` | 开机自启，编号决定顺序 |
+| `bashrc-hook.sh` | 打开 Termux 即自动拉起服务（→ `~/.bashrc`）|
 | `phone_metrics.py` | 设备传感器 → Prometheus 格式 |
 | `prometheus.yml` `rules.yml` | 抓取配置与 8 条告警 |
 | `grafana.ini` `provisioning-*.yaml` `phone-*.json` | Grafana 与三块看板（桌面 / 移动 / 健康总览） |
@@ -62,6 +63,8 @@ HTTP 服务实际发一次请求。
 | 告警界面一直安详的 `inactive` | 裸 `and` 的 label 集不匹配，规则**永不触发** |
 | AriaNg 页面打开是乱码 | release 的 AllInOne 资源是 `.zip` 不是 `.html`，直接改名当页面用了 |
 | 完整性面板一直空着 | `offset 24h` 要等满 24 小时才有数据。改 `max_over_time` 立刻可用，且能识别「掉了又补回一部分」 |
+| Termux 被杀后等 30 分钟也不恢复 | **安卓强杀会连带取消 JobScheduler 任务**，之后没有任何东西会触发。电池优化设成「不受限制」也无效——那管 Doze/App Standby，管不了低内存杀手 |
+| aria2「已启动」但关掉窗口就死 | `nohup` 只挡 SIGHUP 的默认动作，而 aria2 主动把 SIGHUP 当关机信号（日志留 `Download Results:`）。改用 `--daemon=true` |
 | 手机2 失联：ping 通但 8022 拒绝 | `tunwatch.sh` 只管隧道不管 sshd，而 sshd 才是入口。手机1 的 watchdog 一直调 `services.sh start`，两台逻辑不一致 |
 | Termux 被杀的同时 Tailscale 也断，且不自动回来 | 安卓 VPN 只有开了「始终开启的 VPN」才会自启。watchdog 管不到它 |
 | 磁盘保护「已暂停下载」，下载照跑 | `set -u` 下裸 `$2` 触发 unbound variable，脚本中途夭折 |
