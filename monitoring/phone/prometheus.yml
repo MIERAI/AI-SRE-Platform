@@ -1,0 +1,37 @@
+# 手机1（Android/Termux）上的 Prometheus。
+#
+# 这是本项目**第一个抓真实设备的 Prometheus**。此前所有告警数据都来自
+# agent/tools/cluster.py 的模拟器 —— 我设计好让它答对的题。
+#
+# ⚑ 为什么跑在手机上，而不是 Mac 上远程抓：
+#   Mac 会被带走两个月。抓取端不在现场，「没人管的时候它怎么挂的」就采不到。
+#   而那正是要观测的对象（实测：一夜被 Android 杀了 4 次）。
+#
+# ⚑ 为什么 15s：
+#   温度是这台机器唯一快变的量（实测 15 分钟内 53.4°C → 46.2°C）。
+#   放到 60s 会把热尖峰抹平，而热尖峰正是「被杀是否与发热相关」的关键证据。
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    device: phone1
+
+rule_files:
+  - rules.yml
+
+scrape_configs:
+  # 设备自身的传感器（~/phone_metrics.py，本地进程）
+  - job_name: phone
+    static_configs:
+      - targets: ['127.0.0.1:9101']
+        labels: {instance: phone1}
+
+  # ⚑ 抓自己。看似多余，实则是**判断数据缺口原因的唯一依据**：
+  #   若 up{job="phone"}==0 而 prometheus 自身有数据 → 是 exporter 挂了；
+  #   若两者同时断档                                → 是整个 Termux 被系统杀了。
+  #   没有这一条，缺口的成因无法区分。
+  - job_name: prometheus
+    static_configs:
+      - targets: ['127.0.0.1:9090']
+        labels: {instance: phone1}

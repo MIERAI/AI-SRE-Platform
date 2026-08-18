@@ -1,0 +1,88 @@
+# 手机1 的告警规则。
+#
+# ⚑ **没有配 Alertmanager，这些告警不会发通知。** 那还写它干什么？
+#   因为 Prometheus 会把每条 firing 的告警作为 `ALERTS{...}` 时间序列**存进 TSDB**。
+#   人出差两个月回来后，查 `ALERTS` 就能直接得到「哪天、哪条、烧了多久」，
+#   不必再从几百万个原始样本里手工找异常区间。
+#   → 这里的告警是**事后取证的索引**，不是实时通知。
+#
+# ⚑ Phase 6 的教训在这里同样适用（docs/phase6-why.md §5.1）：
+#   实测踩过一条规则因裸 `and` 的 label 集不匹配而【永不触发】，
+#   界面上一直是安详的 inactive。所以下面凡是跨指标的比较都写明 `on()`，
+#   且部署后必须用「把阈值改成必然成立」的办法验证它真能返回结果。
+
+groups:
+  - name: phone-liveness
+    interval: 30s
+    rules:
+      # 最重要的一条：exporter 停了。
+      # 注意它只能覆盖「exporter 死而 Prometheus 活」。两者同死时无人记录 ——
+      # 那种情况只能靠数据缺口本身来识别（见 prometheus.yml 里抓自己的理由）。
+      - alert: PhoneExporterDown
+        expr: up{job="phone"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "exporter 已停 2 分钟（watchdog 每 15 分钟才检查一次，最长空窗 15 分钟）"
+
+      - alert: PhoneServiceDown
+        expr: phone_service_up == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "服务 {{ $labels.service }} 不在了"
+
+      # watchdog 每拉起一次就往日志追加一行。1 小时内涨了 = 这段时间被杀过。
+      # ⚑ 这条是被一个真实 bug 逼出来的：exporter 里 cpu 标签解析错误，
+      #   8 个核全部输出 {cpu=""}，塌缩成一条序列。Prometheus 不报错、up 仍是 1、
+      #   面板上还有一条看着正常的曲线 —— 完全静默。
+      #   自检发现它的原因只是「序列数是 1 而不是 8」这个对不上的数字。
+      #   现在 exporter 自己数重复行，把这类失效变成可告警的量。
+      - alert: PhoneExporterDuplicateSeries
+        expr: phone_exporter_duplicate_series > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "exporter 本轮输出 {{ $value | printf \"%.0f\" }} 条重复序列 —— 标签写错，数据正在被静默折叠"
+
+      - alert: PhoneRestartStorm
+        expr: increase(phone_service_restarts_total[1h]) >= 3
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "1 小时内 watchdog 拉起 {{ $value | printf \"%.0f\" }} 次"
+
+  - name: phone-physical
+    interval: 30s
+    rules:
+      # 60°C 是个观察阈值而非故障阈值 —— 手机常态 44~53°C（实测）。
+      # 设它是为了在 ALERTS 里标出热事件区间，好和被杀时刻做对照。
+      - alert: PhoneOverheat
+        expr: max(phone_thermal_celsius) > 60
+        for: 3m
+        labels: {severity: warning}
+        annotations:
+          summary: "最高温 {{ $value | printf \"%.1f\" }}°C —— 检查是否与重启时刻重合"
+
+      # ⚑ 拔电源是这套东西最现实的死法：没人在家，电耗光就彻底失联，
+      #   连 Tailscale 都回不来。比过热危险得多。
+      - alert: PhoneUnplugged
+        expr: phone_battery_charging == 0
+        for: 10m
+        labels: {severity: critical}
+        annotations:
+          summary: "已脱离充电 10 分钟，当前电量 {{ with query \"phone_battery_percentage\" }}{{ . | first | value }}{{ end }}%"
+
+      - alert: PhoneMemoryLow
+        expr: phone_memavailable_bytes < 1073741824
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "可用内存 {{ $value | humanize1024 }}B —— Android 会开始激进回收后台进程"
+
+      - alert: PhoneDiskLow
+        expr: phone_disk_free_bytes < 21474836480
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "剩余空间 {{ $value | humanize1024 }}B（transmission 还在下载）"

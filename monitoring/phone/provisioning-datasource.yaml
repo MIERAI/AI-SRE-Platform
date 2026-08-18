@@ -1,0 +1,20 @@
+# 数据源走 provisioning 而不是 UI 添加。
+# 理由和 kubernetes/grafana.yaml 一样：UI 里加的东西只存在 sqlite 里，
+# 手机被重置、或 ~/grafana/data 被清掉就没了，而且没人知道它原本长什么样。
+#
+# ⚑ uid 必须写死。dashboard.json 里的 panel 用 uid 引用数据源 ——
+#   不写死的话 Grafana 会随机生成，面板全部变成「Datasource not found」。
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:9090
+    isDefault: true
+    jsonData:
+      # 和 prometheus.yml 的 scrape_interval 保持一致，否则 Grafana 算
+      # rate() 的默认窗口会小于采样间隔，图上出现莫名其妙的空洞。
+      timeInterval: 15s

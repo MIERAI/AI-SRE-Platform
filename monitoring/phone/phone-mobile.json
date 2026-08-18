@@ -1,0 +1,151 @@
+{
+  "uid": "phone1m",
+  "title": "手机1 · 移动版",
+  "tags": ["phone", "mobile"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": {"from": "now-12h", "to": "now"},
+  "editable": false,
+  "description": "在手机小屏上看的精简版。刻意只留 4 个数字 + 3 张图：桌面版那 8 个面板在手机上要划很久，而出门在外真正想知道的只有「它还活着吗、有没有被拔电、热不热」。",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "服务",
+      "description": "3 = sshd / rclone / transmission 全在。",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(phone_service_up)"}],
+      "fieldConfig": {
+        "defaults": {
+          "max": 3, "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null}, {"color": "orange", "value": 2}, {"color": "green", "value": 3}
+          ]}
+        }, "overrides": []
+      },
+      "options": {"colorMode": "background", "graphMode": "none",
+                  "reduceOptions": {"calcs": ["lastNotNull"]}, "textMode": "value"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "最高温",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max(phone_thermal_celsius)"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius", "decimals": 1,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null}, {"color": "orange", "value": 55}, {"color": "red", "value": 65}
+          ]}
+        }, "overrides": []
+      },
+      "options": {"colorMode": "background", "graphMode": "area",
+                  "reduceOptions": {"calcs": ["lastNotNull"]}, "textMode": "value"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "电量",
+      "description": "⚑ 最危险的一格。没插电 → 电耗光 → 彻底失联，人在外面毫无办法。",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "phone_battery_percentage"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "max": 100, "min": 0, "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null}, {"color": "orange", "value": 40}, {"color": "green", "value": 80}
+          ]}
+        }, "overrides": []
+      },
+      "options": {"colorMode": "background", "graphMode": "area",
+                  "reduceOptions": {"calcs": ["lastNotNull"]}, "textMode": "value"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "充电",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "phone_battery_charging"}],
+      "fieldConfig": {
+        "defaults": {
+          "max": 1, "min": 0,
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "已拔", "color": "red", "index": 0},
+                                          "1": {"text": "在充", "color": "green", "index": 1}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null}, {"color": "green", "value": 1}
+          ]}
+        }, "overrides": []
+      },
+      "options": {"colorMode": "background", "graphMode": "none",
+                  "reduceOptions": {"calcs": ["lastNotNull"]}, "textMode": "value"}
+    },
+    {
+      "id": 5,
+      "type": "state-timeline",
+      "title": "抓取存活 · 缺口就是它挂掉的时刻",
+      "description": "只有 phone 断而 prometheus 在 → exporter 挂了。两条一起断 → 整个 Termux 被系统杀了。",
+      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "up", "legendFormat": "{{job}}"}],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"fillOpacity": 80, "lineWidth": 0},
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "DOWN", "color": "red", "index": 0},
+                                          "1": {"text": "up", "color": "green", "index": 1}}}
+          ],
+          "max": 1, "min": 0
+        }, "overrides": []
+      },
+      "options": {"showValue": "never", "mergeValues": true,
+                  "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "温度",
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max(phone_thermal_celsius)", "legendFormat": "机身最高"},
+        {"refId": "B", "expr": "phone_battery_temperature_celsius", "legendFormat": "电池"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {"fillOpacity": 10, "lineWidth": 2, "showPoints": "never"}
+        }, "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+                  "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "电量与可用内存",
+      "description": "内存走低是 Android 开始回收后台进程的前兆 —— 常常就是下一次 DOWN 的原因。",
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "phone_battery_percentage", "legendFormat": "电量 %"},
+        {"refId": "B", "expr": "phone_memavailable_bytes / phone_memtotal_bytes * 100", "legendFormat": "可用内存 %"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "max": 100, "min": 0,
+          "custom": {"fillOpacity": 8, "lineWidth": 2, "showPoints": "never"}
+        }, "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+                  "tooltip": {"mode": "multi"}}
+    }
+  ]
+}
