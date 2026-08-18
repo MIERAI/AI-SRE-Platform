@@ -1,11 +1,17 @@
 {
   "uid": "phone1",
   "title": "手机1 · 无人值守观测",
-  "tags": ["phone", "termux"],
+  "tags": [
+    "phone",
+    "termux"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "30s",
-  "time": {"from": "now-24h", "to": "now"},
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
   "editable": false,
   "description": "第一块面板是抓取存活，放在最上面是刻意的：这台机器的主要失效模式是被 Android 杀掉，而被杀期间没有任何数据 —— 所以要先看缺口在哪，再去看缺口两侧发生了什么。",
   "panels": [
@@ -14,170 +20,504 @@
       "type": "state-timeline",
       "title": "抓取存活 · 缺口即事故现场",
       "description": "up{job=phone}=0 而 prometheus 有数据 → 只是 exporter 挂了。两条同时断档 → 整个 Termux 被系统杀了。这是区分两种失效的唯一依据。",
-      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "targets": [
-        {"refId": "A", "expr": "up", "legendFormat": "{{job}}"}
+        {
+          "refId": "A",
+          "expr": "up",
+          "legendFormat": "{{job}}"
+        }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {"fillOpacity": 80, "lineWidth": 0},
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          },
           "mappings": [
-            {"type": "value", "options": {"0": {"text": "DOWN", "color": "red", "index": 0},
-                                          "1": {"text": "up", "color": "green", "index": 1}}}
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "up",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
           ],
-          "max": 1, "min": 0
+          "max": 1,
+          "min": 0
         },
         "overrides": []
       },
-      "options": {"showValue": "never", "mergeValues": true,
-                  "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}}
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
     },
     {
       "id": 2,
       "type": "timeseries",
       "title": "温度 · 各 thermal zone",
       "description": "已剔除单位不是摄氏度的 zone（vbat 是电压 3.3V、pm8350b_*_lvl 是电源告警等级）。留着它们会把 Y 轴压扁，真实温度变化全挤成直线。",
-      "gridPos": {"h": 9, "w": 16, "x": 0, "y": 6},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "targets": [
-        {"refId": "A", "expr": "topk(8, phone_thermal_celsius)", "legendFormat": "{{zone}}"},
-        {"refId": "B", "expr": "phone_battery_temperature_celsius", "legendFormat": "电池"}
+        {
+          "refId": "A",
+          "expr": "topk(8, phone_thermal_celsius)",
+          "legendFormat": "{{zone}}"
+        },
+        {
+          "refId": "B",
+          "expr": "phone_battery_temperature_celsius",
+          "legendFormat": "电池"
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "celsius",
-          "custom": {"fillOpacity": 5, "lineWidth": 1, "showPoints": "never"},
-          "thresholds": {"mode": "absolute", "steps": [
-            {"color": "green", "value": null},
-            {"color": "orange", "value": 55},
-            {"color": "red", "value": 65}
-          ]}
+          "custom": {
+            "fillOpacity": 5,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 55
+              },
+              {
+                "color": "red",
+                "value": 65
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
-                  "tooltip": {"mode": "multi", "sort": "desc"}}
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     },
     {
       "id": 3,
       "type": "timeseries",
       "title": "电池 · 电量与充电状态",
       "description": "最现实的死法不是烧坏，是有人拔了充电器 —— 电耗光就彻底失联，Tailscale 也回不来。",
-      "gridPos": {"h": 9, "w": 8, "x": 16, "y": 6},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "targets": [
-        {"refId": "A", "expr": "phone_battery_percentage", "legendFormat": "电量 %"},
-        {"refId": "B", "expr": "phone_battery_charging * 100", "legendFormat": "充电中(×100)"}
+        {
+          "refId": "A",
+          "expr": "phone_battery_percentage",
+          "legendFormat": "电量 %"
+        },
+        {
+          "refId": "B",
+          "expr": "phone_battery_charging * 100",
+          "legendFormat": "充电中(×100)"
+        }
       ],
       "fieldConfig": {
         "defaults": {
-          "max": 105, "min": 0,
-          "custom": {"fillOpacity": 10, "lineWidth": 1, "showPoints": "never"},
-          "thresholds": {"mode": "absolute", "steps": [
-            {"color": "red", "value": null}, {"color": "green", "value": 30}
-          ]}
+          "max": 105,
+          "min": 0,
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 30
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
-                  "tooltip": {"mode": "multi"}}
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 4,
       "type": "timeseries",
       "title": "CPU 频率",
       "description": "实测过 cpu0 只有 556 MHz 的深度节能状态。频率长期贴地板本身就是「系统正在压制后台」的线索，可以和被杀时刻对照。",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "targets": [
-        {"refId": "A", "expr": "phone_cpu_freq_mhz", "legendFormat": "cpu{{cpu}}"}
+        {
+          "refId": "A",
+          "expr": "phone_cpu_freq_mhz",
+          "legendFormat": "cpu{{cpu}}"
+        }
       ],
       "fieldConfig": {
-        "defaults": {"unit": "suffix:MHz",
-          "custom": {"fillOpacity": 0, "lineWidth": 1, "showPoints": "never"}},
+        "defaults": {
+          "unit": "suffix:MHz",
+          "custom": {
+            "fillOpacity": 0,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
-                  "tooltip": {"mode": "multi"}}
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 5,
       "type": "timeseries",
       "title": "可用内存",
       "description": "MemAvailable 走低 → Android 开始激进回收后台进程。这是「为什么被杀」最直接的候选解释。",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "targets": [
-        {"refId": "A", "expr": "phone_memavailable_bytes", "legendFormat": "可用"},
-        {"refId": "B", "expr": "phone_memtotal_bytes", "legendFormat": "总量"}
+        {
+          "refId": "A",
+          "expr": "phone_memavailable_bytes",
+          "legendFormat": "可用"
+        },
+        {
+          "refId": "B",
+          "expr": "phone_memtotal_bytes",
+          "legendFormat": "总量"
+        }
       ],
       "fieldConfig": {
-        "defaults": {"unit": "bytes",
-          "custom": {"fillOpacity": 10, "lineWidth": 1, "showPoints": "never"}},
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
-                  "tooltip": {"mode": "multi"}}
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 6,
       "type": "state-timeline",
       "title": "服务存活",
-      "gridPos": {"h": 7, "w": 12, "x": 0, "y": 23},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "targets": [
-        {"refId": "A", "expr": "phone_service_up", "legendFormat": "{{service}}"}
+        {
+          "refId": "A",
+          "expr": "phone_service_up",
+          "legendFormat": "{{service}}"
+        }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {"fillOpacity": 80, "lineWidth": 0},
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          },
           "mappings": [
-            {"type": "value", "options": {"0": {"text": "DOWN", "color": "red", "index": 0},
-                                          "1": {"text": "up", "color": "green", "index": 1}}}
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "up",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
           ],
-          "max": 1, "min": 0
+          "max": 1,
+          "min": 0
         },
         "overrides": []
       },
-      "options": {"showValue": "never", "mergeValues": true,
-                  "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}}
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
     },
     {
       "id": 7,
       "type": "timeseries",
       "title": "watchdog 拉起次数（每小时）",
       "description": "watchdog 每救活一个服务就往日志追一行。这是唯一能反映「曾经挂过」的指标 —— 因为进程死的那段时间根本没有数据点可看。",
-      "gridPos": {"h": 7, "w": 6, "x": 12, "y": 23},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "targets": [
-        {"refId": "A", "expr": "increase(phone_service_restarts_total[1h])", "legendFormat": "重启/小时"}
+        {
+          "refId": "A",
+          "expr": "increase(phone_service_restarts_total[1h])",
+          "legendFormat": "重启/小时"
+        }
       ],
       "fieldConfig": {
-        "defaults": {"custom": {"fillOpacity": 30, "lineWidth": 1, "showPoints": "never", "drawStyle": "bars"}},
+        "defaults": {
+          "custom": {
+            "fillOpacity": 30,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "drawStyle": "bars"
+          }
+        },
         "overrides": []
       },
-      "options": {"legend": {"showLegend": false}, "tooltip": {"mode": "single"}}
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
     },
     {
       "id": 8,
       "type": "timeseries",
       "title": "磁盘剩余",
       "description": "transmission 还在下载。掉到 20 GB 以下会触发 PhoneDiskLow。",
-      "gridPos": {"h": 7, "w": 6, "x": 18, "y": 23},
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "targets": [
-        {"refId": "A", "expr": "phone_disk_free_bytes", "legendFormat": "剩余"}
+        {
+          "refId": "A",
+          "expr": "phone_disk_free_bytes",
+          "legendFormat": "剩余"
+        }
       ],
       "fieldConfig": {
-        "defaults": {"unit": "bytes",
-          "custom": {"fillOpacity": 10, "lineWidth": 1, "showPoints": "never"},
-          "thresholds": {"mode": "absolute", "steps": [
-            {"color": "red", "value": null}, {"color": "green", "value": 21474836480}
-          ]}},
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 21474836480
+              }
+            ]
+          }
+        },
         "overrides": []
       },
-      "options": {"legend": {"showLegend": false}, "tooltip": {"mode": "single"}}
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "磁盘保护状态",
+      "description": "0=正常 1=警告 2=已暂停下载 3=紧急停止 aria2。人在国外看到下载不动时，靠这条区分「故障」和「保护正常工作」。",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "phone_disk_guard_state",
+          "legendFormat": "保护状态"
+        },
+        {
+          "refId": "B",
+          "expr": "phone_disk_free_bytes / 1073741824",
+          "legendFormat": "剩余 GB"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "保护状态"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "max",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     }
   ]
 }

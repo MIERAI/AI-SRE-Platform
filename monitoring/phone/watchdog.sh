@@ -23,6 +23,13 @@ termux-wake-lock 2>/dev/null
   esac
 done
 
+# ── 磁盘保护 ────────────────────────────────────────────────
+# ⚑ 放在拉起服务【之后】：万一 aria2 刚被拉起来，也要立刻受保护约束，
+#   否则它会在下一个 15 分钟窗口里毫无限制地下载。
+if [ -x ~/diskguard.sh ]; then
+  ~/diskguard.sh >/dev/null 2>&1 || log "diskguard 返回错误"
+fi
+
 # ── 照片归档（批处理，不是常驻进程，所以无条件跑）──────────
 if [ -d ~/nas/inbox ]; then
   python ~/archive_photos.py --quiet >>~/archive.log 2>&1 || log "归档脚本返回错误"

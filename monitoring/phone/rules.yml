@@ -80,9 +80,26 @@ groups:
         annotations:
           summary: "可用内存 {{ $value | humanize1024 }}B —— Android 会开始激进回收后台进程"
 
+      # ⚑ 与 PhoneDiskLow 的区别：那条说「空间少了」，这条说
+      #   「保护机制已经动手了」。后者意味着下载已经停了 ——
+      #   人在国外看到下载不动时，需要能一眼分清是故障还是保护。
+      - alert: PhoneDiskGuardActive
+        expr: phone_disk_guard_state >= 2
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "磁盘保护已介入（state={{ $value }}：2=暂停下载 3=紧急停止 aria2）"
+
+      - alert: PhoneDiskGuardStale
+        expr: time() - phone_disk_guard_checked_timestamp > 3600
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "磁盘保护超过 1 小时没运行 —— watchdog 可能没在跑"
+
       - alert: PhoneDiskLow
         expr: phone_disk_free_bytes < 21474836480
         for: 10m
         labels: {severity: warning}
         annotations:
-          summary: "剩余空间 {{ $value | humanize1024 }}B（transmission 还在下载）"
+          summary: "剩余空间 {{ $value | humanize1024 }}B —— 低于 100GB 时 diskguard 会自动暂停下载"

@@ -144,6 +144,20 @@ def collect():
     except Exception:
         pass
 
+    # ⚑ 磁盘保护的状态。0=正常 1=警告 2=已暂停下载 3=紧急停止。
+    #   没有这个指标的话，「下载为什么停了」在面板上完全看不出来 ——
+    #   人在国外会以为是 aria2 坏了，实际是保护机制正常工作。
+    try:
+        with open(os.path.expanduser('~/diskguard_stats.json')) as f:
+            dg = json.load(f)
+        A('# HELP phone_disk_guard_state 0=正常 1=警告 2=暂停下载 3=紧急停止')
+        A('# TYPE phone_disk_guard_state gauge')
+        A(f'phone_disk_guard_state {dg.get("code", 0)}')
+        A('# TYPE phone_disk_guard_checked_timestamp gauge')
+        A(f'phone_disk_guard_checked_timestamp {dg.get("checked", 0)}')
+    except Exception:
+        pass
+
     A('# TYPE phone_scrape_timestamp gauge')
     A(f'phone_scrape_timestamp {int(time.time())}')
 

@@ -40,6 +40,7 @@ HTTP 服务实际发一次请求。
 | `aria2.conf` `start-aria2.sh` | 下载机：HTTP 多线程分片 / BT / 磁力 + AriaNg 界面 |
 | `photopush.sh` `tun.sh` | 手机2 侧：照片推送与隧道 |
 | `archive_photos.py` | 照片按 EXIF 日期归档 + 缩略图 |
+| `diskguard.sh` | 磁盘保护：低于阈值自动暂停下载（带滞回） |
 | `verify.py` | 部署自检：告警能否触发、面板有无数据 |
 
 ## 踩过的坑（都写在对应文件的注释里）
@@ -57,6 +58,8 @@ HTTP 服务实际发一次请求。
 | transmission 重启后登录不上 | 密码抽取少了一位。探测返回 401 是「正常」的，看不出来 |
 | 告警界面一直安详的 `inactive` | 裸 `and` 的 label 集不匹配，规则**永不触发** |
 | AriaNg 页面打开是乱码 | release 的 AllInOne 资源是 `.zip` 不是 `.html`，直接改名当页面用了 |
+| 磁盘保护「已暂停下载」，下载照跑 | `set -u` 下裸 `$2` 触发 unbound variable，脚本中途夭折 |
+| 保护生效了，新任务仍全速下载 | aria2 拒绝 `max-concurrent-downloads=0`（最小 1），而响应被 `>/dev/null` 吞了 |
 
 共同的教训：**计数器对，不代表事情做对了。** 每一处都是去数目标端的实际文件、
 实际序列数、实际能否认证才发现的。
