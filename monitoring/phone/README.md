@@ -39,7 +39,8 @@ HTTP 服务实际发一次请求。
 | `datastats.sh` | 各目录体积与文件数，缓存给 exporter |
 | `start-{prometheus,grafana,filebrowser}.sh` | 各服务的启动包装 |
 | `aria2.conf` `start-aria2.sh` | 下载机：HTTP 多线程分片 / BT / 磁力 + AriaNg 界面 |
-| `photopush.sh` `tun.sh` | 手机2 侧：照片推送与隧道 |
+| `photopush.sh` `tun.sh` `tunwatch.sh` | 手机2 侧：照片推送、隧道、自愈 |
+| `shortcuts-phone1/` `shortcuts-phone2/` | Termux:Widget 桌面快捷方式（点图标即执行） |
 | `archive_photos.py` | 照片按 EXIF 日期归档 + 缩略图 |
 | `diskguard.sh` | 磁盘保护：低于阈值自动暂停下载（带滞回） |
 | `verify.py` | 部署自检：告警能否触发、面板有无数据 |
@@ -60,6 +61,8 @@ HTTP 服务实际发一次请求。
 | 告警界面一直安详的 `inactive` | 裸 `and` 的 label 集不匹配，规则**永不触发** |
 | AriaNg 页面打开是乱码 | release 的 AllInOne 资源是 `.zip` 不是 `.html`，直接改名当页面用了 |
 | 完整性面板一直空着 | `offset 24h` 要等满 24 小时才有数据。改 `max_over_time` 立刻可用，且能识别「掉了又补回一部分」 |
+| 手机2 失联：ping 通但 8022 拒绝 | `tunwatch.sh` 只管隧道不管 sshd，而 sshd 才是入口。手机1 的 watchdog 一直调 `services.sh start`，两台逻辑不一致 |
+| Termux 被杀的同时 Tailscale 也断，且不自动回来 | 安卓 VPN 只有开了「始终开启的 VPN」才会自启。watchdog 管不到它 |
 | 磁盘保护「已暂停下载」，下载照跑 | `set -u` 下裸 `$2` 触发 unbound variable，脚本中途夭折 |
 | 保护生效了，新任务仍全速下载 | aria2 拒绝 `max-concurrent-downloads=0`（最小 1），而响应被 `>/dev/null` 吞了 |
 
@@ -79,6 +82,21 @@ python ~/verify.py     # 告警能否触发 + 每个面板当前是否真有数�
 ~/grafana/ADMIN_PASSWORD.txt
 ~/fb/ADMIN_PASSWORD.txt
 ```
+
+## 桌面一键操作
+
+装 Termux:Widget 后，`~/.shortcuts/` 下的脚本可以放到桌面：
+长按桌面 → 小组件 → Termux widget（列表）或 Termux shortcut（单个图标）。
+
+    手机1              手机2
+    1-启动全部          1-启动全部（含 Tailscale 检测）
+    2-状态              2-状态
+    3-自检              3-推送照片
+    4-重启全部          4-重连隧道
+
+⚑ 手机1 那组刻意做成【不懂技术的人也能用】：托人去房间时点「1-启动全部」，
+  它会启动服务、重新注册定时任务、最后打印 `✅ 全部正常（8/8）`。
+  不需要敲任何命令。
 
 ## 已知缺口
 
