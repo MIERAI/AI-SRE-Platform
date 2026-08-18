@@ -31,6 +31,7 @@ HTTP 服务实际发一次请求。
 | 文件 | 作用 |
 |---|---|
 | `services.sh` | 统一启停。**唯一定义「怎么启动」的地方** |
+| `stop.sh` | 一键关闭。默认保留 sshd 与自愈；`--all` 连自愈一起停 |
 | `watchdog.sh` | 15 分钟自愈，委托给 `services.sh`（54 行 → 36 行） |
 | `boot-10-sshd.sh` `boot-20-services-*.sh` | 开机自启，编号决定顺序 |
 | `phone_metrics.py` | 设备传感器 → Prometheus 格式 |
