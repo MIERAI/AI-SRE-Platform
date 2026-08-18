@@ -117,6 +117,24 @@ python ~/verify.py     # 告警能否触发 + 每个面板当前是否真有数�
   下次重启后看它就能区分是哪条路走通的 —— 之前无法区分
   「Boot 没触发」和「触发了但脚本失败」，而两者修法完全不同。
 
+## 在这台设备上跑模型
+
+能跑，但有两个参数不能省。完整实测见
+[`docs/phone-inference-limits.md`](../../docs/phone-inference-limits.md)。
+
+```bash
+llama-completion -m ~/nas/models/qwen3-4b.gguf -p "..." -n 96 -c 2048 -t 2
+```
+
+| | 默认 `-c` | `-c 2048` |
+|---|---|---|
+| RSS | 9~10 GB | **2.67 GB** |
+| 后果 | Termux 整组被杀 | 服务全程 8/8 |
+
+⚑ 模型文件只有 2.5 GB，差出来的 7 GB 是**默认上下文（32k~40k）的 KV cache**。
+⚑ `llama-cli` 即使加 `-no-cnv`、stdin 给 `/dev/null` 也会进交互模式空转刷 `> `
+  （实测 378 MB 日志里 499,488 次），改用 `llama-completion`。
+
 ## 已知缺口
 
 **File Browser 上游要归档了。** 启动日志里的公告：项目于 **2026-09-01 归档**，
