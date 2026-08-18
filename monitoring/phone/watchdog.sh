@@ -14,6 +14,13 @@ export PATH=/data/data/com.termux/files/usr/bin:$PATH
 LOG=~/watchdog.log
 log(){ echo "$(date '+%F %T') $*" >> $LOG; }
 
+# ⚑ 留痕。用来区分「谁触发了这次执行」：
+#   boot_trace.log 里出现 boot-10-sshd → Termux:Boot 生效
+#   只出现 watchdog invoked           → 是 JobScheduler 的持久化任务
+#   什么都没有                         → 两条路都没走通
+#   实测过一次重启后全部端口关闭，而当时无法判断是哪种情况。
+date "+%F %T watchdog invoked" >> ~/boot_trace.log
+
 termux-wake-lock 2>/dev/null
 
 # ── 拉起掉线的服务 ──────────────────────────────────────────
