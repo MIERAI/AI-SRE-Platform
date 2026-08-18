@@ -13,7 +13,7 @@ Phase 6 的 deployment/phone_exporter.py 是从 Mac 经 SSH 采的，
     CPU 频率    实测 cpu0 只有 556MHz，深度节能状态本身就是被杀的线索
     电池        温度/电量/充电状态 —— Phase 6 里 TPOT 的 ×1.22 漂移当时只能猜是热节流
     内存        MemAvailable 下降 → Android 更激进回收
-    服务存活    sshd/rclone/transmission 是否在
+    服务存活    sshd/rclone/aria2c 是否在
 
 ### 采不到的（Android 权限限制，不是没写）
 
@@ -96,7 +96,10 @@ def collect():
 
     A('# HELP phone_service_up 关键服务是否存活（数据缺口本身也是信号）')
     A('# TYPE phone_service_up gauge')
-    for s in ('sshd', 'rclone', 'transmission-daemon'):
+    # ⚑ 这个列表必须与实际在跑的服务一致。Transmission 移除后忘了改这里，
+    #   phone_service_up{service="transmission-daemon"} 会永远是 0，
+    #   PhoneServiceDown 永久触发 —— 一条永远红着的告警比没有告警更糟。
+    for s in ('sshd', 'rclone', 'aria2c'):
         ok = subprocess.run(['pgrep', '-x', s], capture_output=True).returncode == 0
         A(f'phone_service_up{{service="{s}"}} {1 if ok else 0}')
 

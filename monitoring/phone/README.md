@@ -5,7 +5,7 @@
 
 ```
 手机1（在家，常插电）                        手机2（随身）
-  sshd  rclone(WebDAV)  transmission            sshd
+  sshd  rclone(WebDAV)                        sshd
   aria2 + AriaNg（下载机）
   exporter → Prometheus → Grafana               tunnel ──┐
   File Browser                                  photopush │

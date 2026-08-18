@@ -20,8 +20,9 @@
 #   设备上需要有：
 #       RCLONE_USER=nas
 #       RCLONE_PASS=...
-#       TRANSMISSION_USER=nas
-#       TRANSMISSION_PASS=...
+#
+# ⚑ Transmission 已移除：它只能下 BT，而 aria2 覆盖了它的全部功能，
+#   两个 BT 客户端共管同一个下载目录迟早会打架。移除时种子数为 0。
 
 set -u
 ENV_FILE="$HOME/.services.env"
@@ -29,11 +30,9 @@ ENV_FILE="$HOME/.services.env"
 
 RCLONE_USER="${RCLONE_USER:-nas}"
 RCLONE_PASS="${RCLONE_PASS:-}"
-TRANSMISSION_USER="${TRANSMISSION_USER:-nas}"
-TRANSMISSION_PASS="${TRANSMISSION_PASS:-}"
 
 case "$(whoami)" in
-  u0_a506) DEVICE=phone1; ALL_SVC="sshd rclone transmission aria2 ariang exporter prometheus grafana filebrowser" ;;
+  u0_a506) DEVICE=phone1; ALL_SVC="sshd rclone aria2 ariang exporter prometheus grafana filebrowser" ;;
   u0_a371) DEVICE=phone2; ALL_SVC="sshd tunnel" ;;
   *)       DEVICE=unknown; ALL_SVC="sshd" ;;
 esac
@@ -49,7 +48,6 @@ is_up() {
   case "$1" in
     sshd)         pgrep -x sshd >/dev/null ;;
     rclone)       pgrep -x rclone >/dev/null ;;
-    transmission) pgrep -x transmission-daemon >/dev/null ;;
     exporter)     pid_of "$HOME/exporter.pid" >/dev/null ;;
     prometheus)   pid_of "$HOME/prom.pid" >/dev/null ;;
     grafana)      pid_of "$HOME/grafana.pid" >/dev/null ;;
@@ -65,7 +63,6 @@ svc_pid() {
   case "$1" in
     sshd)         pgrep -x sshd | head -1 ;;
     rclone)       pgrep -x rclone | head -1 ;;
-    transmission) pgrep -x transmission-daemon | head -1 ;;
     exporter)     pid_of "$HOME/exporter.pid" ;;
     prometheus)   pid_of "$HOME/prom.pid" ;;
     grafana)      pid_of "$HOME/grafana.pid" ;;
@@ -79,7 +76,7 @@ svc_pid() {
 # 端口与「健康」的期望状态码。401 也算健康 —— 说明服务在，只是要认证。
 svc_port() {
   case "$1" in
-    sshd) echo 8022 ;; rclone) echo 8080 ;; transmission) echo 9091 ;;
+    sshd) echo 8022 ;; rclone) echo 8080 ;;
     exporter) echo 9101 ;; prometheus) echo 9090 ;; grafana) echo 3000 ;;
     filebrowser) echo 8081 ;; tunnel) echo 3000 ;;
     aria2) echo 6800 ;; ariang) echo 6801 ;;
@@ -92,9 +89,6 @@ start_one() {
     sshd)         sshd ;;
     rclone)       nohup rclone serve webdav "$HOME/nas" --addr 127.0.0.1:8080 \
                     --user "$RCLONE_USER" --pass "$RCLONE_PASS" >"$HOME/rclone.log" 2>&1 & ;;
-    transmission) nohup transmission-daemon -f -a '127.0.0.1' --rpc-bind-address 127.0.0.1 \
-                    -p 9091 -t -u "$TRANSMISSION_USER" -v "$TRANSMISSION_PASS" \
-                    -w "$HOME/nas/downloads" -M >"$HOME/transmission.log" 2>&1 & ;;
     exporter)     nohup python "$HOME/phone_metrics.py" >"$HOME/exporter.log" 2>&1 &
                   echo $! > "$HOME/exporter.pid" ;;
     prometheus)   "$HOME/prom/start-prometheus.sh" ;;
@@ -112,9 +106,6 @@ stop_one() {
   case "$1" in
     sshd)         pkill -x sshd ;;
     rclone)       pkill -x rclone ;;
-    transmission) transmission-remote 127.0.0.1:9091 \
-                    -n "$TRANSMISSION_USER:$TRANSMISSION_PASS" --exit >/dev/null 2>&1 \
-                    || pkill -x transmission-daemon ;;
     tunnel)       bash "$HOME/tun.sh" stop >/dev/null ;;
     *)            # 走 PID 文件的服务
                   local f
