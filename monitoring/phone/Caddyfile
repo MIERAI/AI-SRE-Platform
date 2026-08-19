@@ -1,0 +1,30 @@
+# 博客服务器。替换 python http.server,为了能记录【真实访客 IP】。
+#
+# ⚑ 请求链:访客 → Cloudflare → cloudflared 隧道 → 这里(127.0.0.1:8090)
+#   直连来源永远是 127.0.0.1,真实 IP 在 Cloudflare 加的 CF-Connecting-IP 头里。
+#   Caddy 能读这个头还原真实 IP,python http.server 不能 —— 这是换它的唯一理由。
+#
+# ⚑ trusted_proxies 必须在全局 options 块(文件最顶,大括号包住),
+#   不能放站点里 —— 那样会报 unrecognized directive。
+# ⚑ 日志用 JSON(jsonl),方便之后 DuckDB 直接 read_json_auto 查。
+
+{
+	servers {
+		trusted_proxies static 127.0.0.1/32
+		client_ip_headers CF-Connecting-IP X-Forwarded-For
+	}
+}
+
+:8090 {
+	root * /data/data/com.termux/files/home/nas/blog
+	file_server
+	encode gzip
+
+	log {
+		output file /data/data/com.termux/files/home/blog_access.jsonl {
+			roll_size 10mb
+			roll_keep 3
+		}
+		format json
+	}
+}

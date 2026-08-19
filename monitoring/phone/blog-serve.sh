@@ -10,16 +10,16 @@
 set -u
 PORT=8090
 BLOG=~/nas/blog
-HTTP_PID=~/blog_http.pid
+HTTP_PID=~/caddy.pid
 CF_PID=~/cf.pid
 URLFILE=~/blog_url.txt
 
-# ① 静态服务器
+# ① 静态服务器:Caddy(替代 python http.server,为了记录真实访客IP+国家)
+#   ⚑ Caddy 从 Cloudflare 的 CF-Connecting-IP 头还原真实IP,写 JSON 日志,
+#     供 DuckDB 分析访问。python http.server 只能看到 127.0.0.1,换不掉。
 if ! { [ -f "$HTTP_PID" ] && kill -0 "$(cat "$HTTP_PID")" 2>/dev/null; }; then
-  cd "$BLOG" 2>/dev/null && {
-    setsid nohup python -m http.server $PORT --bind 127.0.0.1 >~/blog_http.log 2>&1 &
-    echo $! > "$HTTP_PID"
-  }
+  setsid nohup caddy run --config ~/Caddyfile --adapter caddyfile >~/caddy.log 2>&1 &
+  echo $! > "$HTTP_PID"
 fi
 
 # ② cloudflared 隧道
