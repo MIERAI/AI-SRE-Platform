@@ -71,6 +71,10 @@ fi
 # ── 数据目录统计（给健康面板用）────────────────────────────
 # ── 博客对外服务(cloudflared 隧道,地址变了自动记录)──
 [ -x ~/blog-serve.sh ] && ~/blog-serve.sh >/dev/null 2>&1
+# 博客访问指标 exporter(9102)
+{ [ -f ~/blog_exporter.pid ] && kill -0 $(cat ~/blog_exporter.pid) 2>/dev/null; } || {
+  setsid nohup python ~/blog_exporter.py >~/blog_exporter.log 2>&1 &
+  echo $! > ~/blog_exporter.pid; log "blog_exporter 已重启"; }
 
 [ -x ~/datastats.sh ] && ~/datastats.sh >/dev/null 2>&1
 

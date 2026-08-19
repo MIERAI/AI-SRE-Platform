@@ -1,0 +1,70 @@
+{
+  "uid": "blog1",
+  "title": "博客 · 访问监控",
+  "tags": ["blog"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": {"from": "now-24h", "to": "now"},
+  "editable": false,
+  "description": "跑在旧手机上的博客,访客经 Cloudflare 进来。数据源是 Caddy 的 JSON 日志 → blog_exporter → Prometheus。访客真实IP/国家来自 Cloudflare 的 CF-Connecting-IP / Cf-Ipcountry 头。",
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "累计访问",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "blog_requests_total"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 2, "type": "stat", "title": "独立访客",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "blog_unique_visitors"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "green"}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 3, "type": "stat", "title": "覆盖国家数",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "count(blog_requests_by_country)"}],
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 4, "type": "stat", "title": "错误请求(非2xx)",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(blog_requests_by_status) - sum(blog_requests_by_status{status=~\"2..\"})"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "访问量趋势(每5分钟新增)",
+      "description": "用 increase() 算增量。平的地方=没人访问,有峰=有流量。",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "increase(blog_requests_total[5m])", "legendFormat": "访问/5分钟"}],
+      "fieldConfig": {"defaults": {"custom": {"fillOpacity": 20, "lineWidth": 2, "showPoints": "auto", "drawStyle": "bars"}}, "overrides": []},
+      "options": {"legend": {"showLegend": false}, "tooltip": {"mode": "single"}}
+    },
+    {
+      "id": 6, "type": "piechart", "title": "访客来自哪些国家",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "blog_requests_by_country", "legendFormat": "{{country}}"}],
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "right", "showLegend": true}, "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 7, "type": "bargauge", "title": "最热页面",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "topk(8, blog_page_views)", "legendFormat": "{{page}}"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "continuous-GrYlRd"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"]}}
+    }
+  ]
+}
