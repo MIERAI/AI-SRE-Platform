@@ -69,6 +69,9 @@ if [ -d ~/nas/inbox ]; then
 fi
 
 # ── 数据目录统计（给健康面板用）────────────────────────────
+# ── 博客对外服务(cloudflared 隧道,地址变了自动记录)──
+[ -x ~/blog-serve.sh ] && ~/blog-serve.sh >/dev/null 2>&1
+
 [ -x ~/datastats.sh ] && ~/datastats.sh >/dev/null 2>&1
 
 # ── 重新注册定时任务 ────────────────────────────────────────
