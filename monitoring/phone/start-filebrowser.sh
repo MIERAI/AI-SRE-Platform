@@ -19,7 +19,12 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
 fi
 
 cd "$FB_DIR" || exit 1
+# ⚑ --followExternalSymlinks 让它跟随指向 ~/nas 之外的软链接
+#   （手机1 自己的照片/音乐/视频在 ~/storage，通过软链挂进来）。
+#   官方标注 (unsafe)：它允许逃逸出根目录。在本场景可接受 ——
+#   只有 admin 能登录、只在 tailnet 内访问。
 nohup ./filebrowser --database "$FB_DIR/filebrowser.db" \
+  --followExternalSymlinks \
   >"$FB_DIR/stdout.log" 2>&1 &
 
 echo $! > "$PIDFILE"

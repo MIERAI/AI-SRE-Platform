@@ -65,6 +65,7 @@ HTTP 服务实际发一次请求。
 | `grafana.ini` `provisioning-*.yaml` `phone-*.json` | Grafana 与三块看板（桌面 / 移动 / 健康总览） |
 | `datastats.sh` | 各目录体积与文件数，缓存给 exporter |
 | `start-{prometheus,grafana,filebrowser}.sh` | 各服务的启动包装 |
+| `~/nas/手机1/*`（软链）| 手机1 自身相册/音乐/视频(在 `~/storage`)挂进 File Browser |
 | `aria2.conf` `start-aria2.sh` | 下载机：HTTP 多线程分片 / BT / 磁力 + AriaNg 界面 |
 | `photopush.sh` `tun.sh` `tunwatch.sh` | 手机2 侧：照片推送、隧道、自愈 |
 | `shortcuts-phone1/` `shortcuts-phone2/` | Termux:Widget 桌面快捷方式（点图标即执行） |
