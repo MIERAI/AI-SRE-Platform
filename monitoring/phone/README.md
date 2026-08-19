@@ -14,6 +14,27 @@
         └──────────── tar over ssh / SSH 隧道 ────────────┘
 ```
 
+## 访问方式:MagicDNS 域名(已替代 SSH 隧道)
+
+实测突破:手机2 浏览器**打不开裸 tailnet IP**(`100.80.225.15:3000` → ERR),
+但**能打开 MagicDNS 域名**(`realme-...ts.net:9101` → 正常)。
+所以浏览器拦的是「裸 IP 这个形式」(私有 IP 拦截/强制 HTTPS),不是网络路径。
+换域名即绕过 —— **不再需要 SSH 隧道**。
+
+前提:所有服务改绑 `0.0.0.0`(tailnet 内可达),Grafana 的 `root_url` 改成域名
+(否则登录跳转会跳到 localhost)。安全靠两层:① 只有 tailnet 设备能到
+② 每个服务各自的认证(FB 密码 / aria2 secret / rclone 密码)仍必需。
+
+    Grafana        http://<域名>:3000     admin
+    Prometheus     http://<域名>:9090
+    File Browser   http://<域名>:8081     admin
+    AriaNg         http://<域名>:6801
+    rclone WebDAV  http://<域名>:8080     nas
+
+⚠️ 绑 0.0.0.0 = tailnet 内**所有设备**能连(仍需密码)。改动前务必确认
+tailnet 成员列表 —— 曾给外部设备试过登录的,该从后台移除。
+`tailscale serve`/`funnel` 不可用:安卓 App 版无 CLI,Termux 版撞 SIGSYS。
+
 ## 一键启停
 
 ```bash

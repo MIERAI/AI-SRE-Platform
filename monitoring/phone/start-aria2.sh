@@ -38,7 +38,7 @@ start_ui() {
   [ -f "$HOME/ariang.pid" ] && kill -0 "$(cat "$HOME/ariang.pid")" 2>/dev/null && return 0
   [ -d "$UI" ] || return 0
   cd "$UI" || return 0
-  nohup python -m http.server 6801 --bind 127.0.0.1 >"$A2/ui.log" 2>&1 &
+  nohup python -m http.server 6801 --bind 0.0.0.0 >"$A2/ui.log" 2>&1 &
   echo $! > "$HOME/ariang.pid"
 }
 

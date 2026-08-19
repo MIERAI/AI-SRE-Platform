@@ -92,7 +92,7 @@ start_one() {
   is_up "$1" && { echo "  · $1 已在运行"; return 0; }
   case "$1" in
     sshd)         sshd ;;
-    rclone)       nohup rclone serve webdav "$HOME/nas" --addr 127.0.0.1:8080 \
+    rclone)       nohup rclone serve webdav "$HOME/nas" --addr 0.0.0.0:8080 \
                     --user "$RCLONE_USER" --pass "$RCLONE_PASS" >"$HOME/rclone.log" 2>&1 & ;;
     exporter)     nohup python "$HOME/phone_metrics.py" >"$HOME/exporter.log" 2>&1 &
                   echo $! > "$HOME/exporter.pid" ;;
