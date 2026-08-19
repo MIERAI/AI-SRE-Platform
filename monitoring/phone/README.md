@@ -17,7 +17,7 @@
 ## 访问方式:MagicDNS 域名(已替代 SSH 隧道)
 
 实测突破:手机2 浏览器**打不开裸 tailnet IP**(`100.80.225.15:3000` → ERR),
-但**能打开 MagicDNS 域名**(`realme-...ts.net:9101` → 正常)。
+但**能打开 MagicDNS 域名**(`yzq...ts.net:9101` → 正常)。
 所以浏览器拦的是「裸 IP 这个形式」(私有 IP 拦截/强制 HTTPS),不是网络路径。
 换域名即绕过 —— **不再需要 SSH 隧道**。
 
@@ -28,8 +28,12 @@
     Grafana        http://<域名>:3000     admin
     Prometheus     http://<域名>:9090
     File Browser   http://<域名>:8081     admin
-    AriaNg         http://<域名>:6801
-    rclone WebDAV  http://<域名>:8080     nas
+    AriaNg         http://<域名>:6801     (RPC token 自动记)
+    rclone WebDAV  http://<域名>:8080     admin
+
+凭据已统一:用户名均为 `admin`,密码一致(存设备 `ADMIN_PASSWORD.txt`,不入库)。
+机器名在 Tailscale 后台可改(如 `yzq`),改名后需同步 Grafana `root_url`
+与 AriaNg 的 RPC 地址 —— 否则登录跳转/RPC 会坏。
 
 ⚠️ 绑 0.0.0.0 = tailnet 内**所有设备**能连(仍需密码)。改动前务必确认
 tailnet 成员列表 —— 曾给外部设备试过登录的,该从后台移除。
